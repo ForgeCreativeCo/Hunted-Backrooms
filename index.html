@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HUM — prototype</title>
+  </head>
+  <body>
+    <canvas id="hunt"></canvas>
+    <canvas id="sense" hidden></canvas>
+
+    <div id="hud" hidden>
+      <div id="tl">
+        <div id="clock">12:00 AM</div>
+        <div id="sub"></div>
+      </div>
+      <div id="tr">
+        <div id="score">FEAR 0 / 120</div>
+        <div id="stars">☆☆☆</div>
+        <div id="roster"></div>
+      </div>
+      <div id="seen">◉ SEEN</div>
+      <div id="toast"></div>
+      <div id="crosshair"></div>
+      <div id="prompt"></div>
+      <div id="captions"></div>
+      <div id="bottom">
+        <div id="dread"><span>DREAD</span><div id="dreadbar"><div id="dreadfill"></div></div><b id="dreadnum">30</b></div>
+        <div id="abilities">
+          <div class="ab" id="ab-blackout"><kbd>1</kbd>Blackout <i>20</i></div>
+          <div class="ab" id="ab-shift"><kbd>2</kbd>Shift <i>15</i></div>
+          <div class="ab" id="ab-seep"><kbd>Q</kbd>Seep <i>free</i></div>
+          <div class="ab"><kbd>E</kbd>Erase <kbd>R</kbd>Redraw chalk</div>
+          <div class="ab" id="ab-view"><kbd>Tab</kbd><span id="viewname">Sense view</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="overlay" id="title">
+      <h1>HUM</h1>
+      <p class="pitch">You are the thing in the Backrooms. Feed on their fear before they find an exit.</p>
+      <div class="cols">
+        <ul>
+          <li><kbd>WASD</kbd> move · <kbd>Mouse</kbd> look</li>
+          <li><kbd>Click</kbd> catch a wanderer in reach</li>
+          <li><kbd>Tab</kbd> switch hunt / sense view</li>
+          <li><kbd>1</kbd> Blackout a light circuit</li>
+          <li><kbd>2</kbd> Shift a wall nobody is watching</li>
+          <li><kbd>Q</kbd> Seep through walls while unseen</li>
+          <li><kbd>E</kbd> / <kbd>R</kbd> erase or redraw a chalk arrow</li>
+        </ul>
+        <ul class="rules">
+          <li>A calm catch is worth little. Scare them first.</li>
+          <li>Fear builds <b>dread</b>, which powers your abilities.</li>
+          <li>The space only changes when nobody is watching.</li>
+          <li>They see you from far off in the light, barely in the dark.</li>
+          <li>Harvest <b id="quota">120</b> fear before 6 AM.</li>
+        </ul>
+      </div>
+      <p class="go">Click to begin</p>
+      <p class="seed" id="seedline"></p>
+    </div>
+
+    <div class="overlay" id="pause" hidden>
+      <h2>Paused</h2>
+      <p class="go">Click to resume</p>
+    </div>
+
+    <div class="overlay black" id="catch" hidden>
+      <div id="catchpts"></div>
+    </div>
+
+    <div class="overlay" id="end" hidden>
+      <h2 id="endtitle">Dawn</h2>
+      <p id="endsummary"></p>
+      <p id="endstars" class="bigstars"></p>
+      <div class="questions">
+        <p>Playtest questions</p>
+        <ul>
+          <li>Did you plan traps, or just chase?</li>
+          <li>Did watching fear climb feel good?</li>
+          <li>When prey escaped, did you want to go again?</li>
+          <li>When you shifted a wall, could you see them get confused?</li>
+        </ul>
+      </div>
+      <div class="buttons">
+        <button id="replay">Replay this night</button>
+        <button id="newnight">New night</button>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
