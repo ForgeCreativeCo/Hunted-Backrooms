@@ -565,14 +565,6 @@ function frame(now: number) {
 
   S.world.update(t, mode === 'catching' && S.role === 'monster' ? 1 : g.monster.seen && S.role === 'monster' ? 0.25 : 0);
   S.sound.update((i) => S.world.circuitLevel(i, t));
-  // Chase music: a human hears it when they see the monster close; the monster and
-  // spectators, when anyone does.
-  {
-    const m = g.monster;
-    const close = (w: typeof g.wanderers[number]) => w.active && w.sees && Math.hypot(w.x - m.x, w.z - m.z) < 16;
-    const watching = me && !S.spectating ? [me] : g.wanderers;
-    S.sound.chase(mode !== 'title' && mode !== 'menu' && mode !== 'over' && watching.some(close));
-  }
   if (view === 'hunt' || mode === 'title' || mode === 'menu') S.world.render();
   else {
     S.world.updateListener();

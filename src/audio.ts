@@ -3,9 +3,11 @@ import { Game, Wanderer } from './game';
 
 // Recorded clips for the big moments (public/audio), synthesized sound for the rest.
 // Positional where it matters, because sound is a mechanic.
-const CLIPS = ['ambience', 'roar', 'distant-screams', 'wail', 'jumpscare', 'scream-a', 'scream-b', 'breathing-1', 'breathing-2', 'chase'] as const;
+const CLIPS = ['ambience', 'roar', 'distant-screams', 'wail', 'jumpscare', 'scream-a', 'scream-b', 'breathing-1', 'breathing-2', 'music'] as const;
 type Clip = (typeof CLIPS)[number];
 // The roar file holds several separate roars: [start, length] in seconds.
+// How loud the PA music sits under everything else.
+const MUSIC_VOL = 0.11;
 const ROARS = [[0, 2.1], [2.9, 2.2], [5.4, 1.6], [9.4, 2.2], [12.4, 1.6]];
 
 export class Sound {
@@ -16,10 +18,10 @@ export class Sound {
   private master: GainNode;
   private clips = new Map<Clip, AudioBuffer>();
   private ambience: AudioBufferSourceNode | null = null;
-  private chaseSrc: AudioBufferSourceNode | null = null;
-  private chaseGain: GainNode | null = null;
-  private chaseHold = 0;
-  private chaseQuiet = 0;
+  private music: AudioBufferSourceNode | null = null;
+  private musicLevel: GainNode | null = null;
+  private hiss: AudioBufferSourceNode | null = null;
+  private nextDropout = 0;
   private nextDistant = 0;
   private nextBeat = 0;
   private oscillators: OscillatorNode[] = [];
@@ -79,6 +81,7 @@ export class Sound {
         .then((buf) => {
           this.clips.set(name, buf);
           if (name === 'ambience') this.startAmbience();
+          if (name === 'music') this.startMusic();
         })
         .catch(() => { /* fall back to synthesized sound */ });
     }
@@ -122,9 +125,133 @@ export class Sound {
     this.ambience = src;
   }
 
+  /**
+   * Background music, as if from a tired old PA somewhere in the ceiling: mono,
+   * band-limited, overdriven, played slow and wavering, smeared by the room and
+   * echoed by a speaker further off. Now and then the signal drops out.
+   */
+  private startMusic() {
+    const buf = this.clips.get('music');
+    if (!buf || this.music || this.ctx.state !== 'running') return;
+    const ctx = this.ctx, now = ctx.currentTime;
+
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    src.loopStart = 2;
+    src.loopEnd = buf.duration - 15; // skip the fade-out at the end
+    src.playbackRate.value = 0.93; // a little slow, and so a little flat
+
+    // Tape-like wow and flutter, plus a slow drift, so it never sits in tune.
+    for (const [hz, cents] of [[0.031, 28], [0.23, 16], [5.7, 5]]) {
+      const lfo = ctx.createOscillator();
+      lfo.frequency.value = hz;
+      const depth = ctx.createGain();
+      depth.gain.value = cents;
+      lfo.connect(depth).connect(src.detune);
+      lfo.start(now);
+      this.oscillators.push(lfo);
+    }
+
+    // One speaker: mono.
+    const mono = ctx.createGain();
+    mono.channelCount = 1;
+    mono.channelCountMode = 'explicit';
+    mono.channelInterpretation = 'speakers';
+
+    // A cheap horn: no lows, no highs, a honk in the middle.
+    const hp = ctx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 380;
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 3000;
+    const honk = ctx.createBiquadFilter();
+    honk.type = 'peaking';
+    honk.frequency.value = 1400;
+    honk.Q.value = 1.2;
+    honk.gain.value = 7;
+
+    // An amplifier pushed past what it can take.
+    const drive = ctx.createWaveShaper();
+    const curve = new Float32Array(1024);
+    for (let i = 0; i < curve.length; i++) curve[i] = Math.tanh((i / 511.5 - 1) * 3.5) / Math.tanh(3.5);
+    drive.curve = curve;
+    drive.oversample = '2x';
+
+    // The room: a long, hard reverb tail.
+    const room = ctx.createConvolver();
+    const len = Math.floor(ctx.sampleRate * 3.4);
+    const ir = ctx.createBuffer(2, len, ctx.sampleRate);
+    for (let c = 0; c < 2; c++) {
+      const d = ir.getChannelData(c);
+      for (let i = Math.floor(ctx.sampleRate * 0.03); i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3.2);
+    }
+    room.buffer = ir;
+    const wet = ctx.createGain();
+    wet.gain.value = 0.5;
+
+    // Another speaker down the hall, a beat behind.
+    const echo = ctx.createDelay(1);
+    echo.delayTime.value = 0.17;
+    const echoBack = ctx.createGain();
+    echoBack.gain.value = 0.3;
+    const echoOut = ctx.createGain();
+    echoOut.gain.value = 0.35;
+
+    const level = ctx.createGain();
+    level.gain.setValueAtTime(0, now);
+    level.gain.linearRampToValueAtTime(MUSIC_VOL, now + 8);
+
+    src.connect(mono).connect(hp).connect(lp).connect(honk).connect(drive);
+    drive.connect(level);
+    drive.connect(room).connect(wet).connect(level);
+    drive.connect(echo).connect(echoOut).connect(level);
+    echo.connect(echoBack).connect(echo);
+    level.connect(this.master);
+    src.start(now, 2);
+
+    // Line hiss under it.
+    const hiss = ctx.createBufferSource();
+    hiss.buffer = this.noiseBuf;
+    hiss.loop = true;
+    const hissF = ctx.createBiquadFilter();
+    hissF.type = 'bandpass';
+    hissF.frequency.value = 3500;
+    hissF.Q.value = 0.6;
+    const hissG = ctx.createGain();
+    hissG.gain.value = 0.05;
+    hiss.connect(hissF).connect(hissG).connect(level);
+    hiss.start(now);
+
+    this.music = src;
+    this.musicLevel = level;
+    this.hiss = hiss;
+    this.nextDropout = now + 25 + Math.random() * 30;
+  }
+
+  /** The PA cuts out for a moment, crackles, and comes back. */
+  private musicDropout() {
+    const g = this.musicLevel;
+    if (!g) return;
+    const t = this.ctx.currentTime;
+    const gone = 0.25 + Math.random() * 1.2;
+    g.gain.cancelScheduledValues(t);
+    g.gain.setValueAtTime(MUSIC_VOL, t);
+    g.gain.linearRampToValueAtTime(0.02, t + 0.04);
+    g.gain.setValueAtTime(0.02, t + gone);
+    g.gain.linearRampToValueAtTime(MUSIC_VOL, t + gone + 0.08);
+    this.noise(this.master, 0.03, 2500, 1, 0.12);
+    setTimeout(() => this.noise(this.master, 0.03, 1800, 1, 0.1), gone * 1000);
+  }
+
   resume() {
-    if (this.ctx.state !== 'running') this.ctx.resume().then(() => this.startAmbience());
-    else this.startAmbience();
+    const start = () => {
+      this.startAmbience();
+      this.startMusic();
+    };
+    if (this.ctx.state !== 'running') this.ctx.resume().then(start);
+    else start();
   }
 
   setCircuit(i: number, level: number) {
@@ -328,53 +455,12 @@ export class Sound {
     setTimeout(() => this.tone(this.master, 'sine', 55, 34, 0.14, vol * 0.7), 140);
   }
 
-  /**
-   * The chase music: in while someone is looking at the monster up close, and for a
-   * few seconds after, then a slow fade. Called every frame.
-   */
-  chase(on: boolean) {
-    const buf = this.clips.get('chase');
-    if (!buf || this.ctx.state !== 'running') return;
-    const now = this.ctx.currentTime;
-    if (on) this.chaseHold = now + 6;
-    const live = now < this.chaseHold;
-    if (live && !this.chaseSrc) {
-      // Each chase picks up somewhere in the loud middle of the track.
-      const src = this.ctx.createBufferSource();
-      src.buffer = buf;
-      src.loop = true;
-      src.loopStart = 20;
-      src.loopEnd = buf.duration - 20;
-      const g = this.ctx.createGain();
-      g.gain.value = 0;
-      src.connect(g).connect(this.master);
-      src.start(now, 20 + Math.random() * (buf.duration - 60));
-      this.chaseSrc = src;
-      this.chaseGain = g;
-    }
-    if (!this.chaseSrc || !this.chaseGain) return;
-    if (live) {
-      this.chaseQuiet = 0;
-      this.chaseGain.gain.setTargetAtTime(0.5, now, 0.5);
-    } else {
-      this.chaseGain.gain.setTargetAtTime(0, now, 2.5);
-      if (!this.chaseQuiet) this.chaseQuiet = now + 12;
-      else if (now > this.chaseQuiet) this.stopChase();
-    }
-  }
-
-  private stopChase() {
-    try { this.chaseSrc?.stop(); } catch { /* already stopped */ }
-    this.chaseSrc = null;
-    this.chaseGain = null;
-    this.chaseQuiet = 0;
-  }
-
   /** Stop everything this night started. */
   dispose() {
     for (const o of this.oscillators) { try { o.stop(); } catch { /* already stopped */ } }
     try { this.ambience?.stop(); } catch { /* already stopped */ }
-    this.stopChase();
+    try { this.music?.stop(); } catch { /* already stopped */ }
+    try { this.hiss?.stop(); } catch { /* already stopped */ }
     this.master.disconnect();
     this.listener.gain.disconnect();
     this.listener.removeFromParent();
@@ -384,8 +470,13 @@ export class Sound {
   update(levels: (i: number) => number) {
     for (let i = 0; i < this.hums.length; i++) this.setCircuit(i, levels(i));
 
-    // Now and then, something else screams far off in the Backrooms.
     const now = this.ctx.currentTime;
+    if (this.music && now >= this.nextDropout) {
+      this.nextDropout = now + 25 + Math.random() * 45;
+      this.musicDropout();
+    }
+
+    // Now and then, something else screams far off in the Backrooms.
     if (this.ctx.state === 'running' && this.clips.has('distant-screams')) {
       if (this.nextDistant === 0) this.nextDistant = now + 40 + Math.random() * 40;
       else if (now >= this.nextDistant) {
