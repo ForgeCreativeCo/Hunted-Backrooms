@@ -64,12 +64,12 @@ kbd {
 #toast.on { opacity: 1; }
 
 #crosshair {
-  position: absolute; top: 50%; left: 50%; width: 6px; height: 6px; margin: -3px 0 0 -3px;
+  position: fixed; top: 50%; left: 50%; width: 6px; height: 6px; margin: -3px 0 0 -3px;
   border-radius: 50%; background: rgba(232, 223, 192, 0.5);
 }
 #crosshair.catch { background: var(--accent); width: 12px; height: 12px; margin: -6px 0 0 -6px; }
 #prompt {
-  position: absolute; top: calc(50% + 22px); left: 50%; transform: translateX(-50%);
+  position: fixed; top: calc(50% + 22px); left: 50%; transform: translateX(-50%);
   font-size: 13px; text-shadow: 0 0 6px #000; white-space: nowrap;
 }
 
@@ -172,3 +172,24 @@ input:focus { border-color: var(--fg); }
 #players li .r.monster { color: var(--accent); }
 #players li .r.ok::after { content: ' · ready'; color: var(--ok); }
 #players li.you { background: rgba(232, 223, 192, 0.05); }
+
+/* Found footage: the camcorder's viewfinder, under the HUD. */
+#cam { position: fixed; inset: 0; pointer-events: none; font-family: 'VT323', var(--mono); color: #f4f4ec; text-shadow: 0 0 2px rgba(255, 255, 255, 0.5), 1px 1px 0 rgba(0, 0, 0, 0.7); letter-spacing: 0.08em; }
+#cam[hidden] { display: none; }
+#cam .bracket { position: absolute; width: 42px; height: 30px; border: 0 solid rgba(244, 244, 236, 0.7); }
+#cam .tl { top: 7vh; left: 6vw; border-top-width: 2px; border-left-width: 2px; }
+#cam .tr { top: 7vh; right: 6vw; border-top-width: 2px; border-right-width: 2px; }
+#cam .bl { bottom: 7vh; left: 6vw; border-bottom-width: 2px; border-left-width: 2px; }
+#cam .br { bottom: 7vh; right: 6vw; border-bottom-width: 2px; border-right-width: 2px; }
+#rec { position: absolute; top: calc(7vh + 40px); left: calc(6vw + 4px); font-size: 22px; display: flex; align-items: center; gap: 8px; }
+#rec .dot { width: 13px; height: 13px; border-radius: 50%; background: #ff2a2a; box-shadow: 0 0 6px #ff2a2a; animation: recblink 1s steps(1) infinite; }
+#tape { margin-left: 10px; opacity: 0.85; }
+#nightshot { position: absolute; top: calc(7vh + 40px); right: calc(6vw + 4px); font-size: 20px; color: #b8ffcc; }
+#stamp { position: absolute; bottom: calc(7vh + 40px); right: calc(6vw + 4px); font-size: 24px; text-align: right; line-height: 1.1; }
+@keyframes recblink { 50% { opacity: 0; } }
+/* The HUD sits inside the viewfinder when the camcorder look is on. */
+body.footage #hud { inset: calc(7vh + 76px) calc(6vw + 4px) calc(7vh + 40px); }
+body.footage #bottom, body.footage #humanbar { bottom: 0; left: 0; right: 0; }
+
+.toggle { display: inline-flex; align-items: center; gap: 8px; margin-top: 14px; color: var(--dim); font-size: 13px; cursor: pointer; pointer-events: auto; }
+.toggle input { accent-color: #f2e6b0; width: 15px; height: 15px; margin: 0; cursor: pointer; }

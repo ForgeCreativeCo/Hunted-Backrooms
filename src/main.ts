@@ -62,6 +62,22 @@ interface Session {
   off: (() => void) | null;
 }
 
+// ---- Found footage setting ----
+
+let footage = true;
+try { footage = localStorage.getItem('hum-footage') !== '0'; } catch { /* storage blocked */ }
+const footageBoxes = [...document.querySelectorAll<HTMLInputElement>('.opt-footage')];
+for (const box of footageBoxes) {
+  box.checked = footage;
+  box.addEventListener('change', () => {
+    footage = box.checked;
+    for (const b of footageBoxes) b.checked = footage;
+    try { localStorage.setItem('hum-footage', footage ? '1' : '0'); } catch { /* storage blocked */ }
+    if (S) S.world.footage = footage;
+    syncCam();
+  });
+}
+
 let huntCanvas = $('hunt') as HTMLCanvasElement;
 const senseCanvas = $('sense') as HTMLCanvasElement;
 let S: Session;
@@ -76,7 +92,12 @@ function makeSession(seed: string, role: Role, slot: number, net: Net | null, pl
   const world = new World3D(game, huntCanvas);
   const sense = new SenseView(senseCanvas, game);
   const sound = new Sound(game, world.camera, world.scene);
-  world.onNightVision = (on) => sound.nightVision(on);
+  world.onNightVision = (on) => {
+    sound.nightVision(on);
+    $('nightshot').hidden = !on;
+  };
+  world.footage = footage;
+  $('nightshot').hidden = true;
   if (role === 'human') world.viewer = { role: 'human', slot };
   const s: Session = { net, game, world, sense, sound, role, slot, seed, spectating: false, placed: role !== 'human', sendT: 0, humans: players?.length ?? 0, off: null };
   if (import.meta.env.DEV) Object.assign(window, { hum: s });
@@ -377,14 +398,17 @@ document.addEventListener('mousemove', (e) => {
 
 document.addEventListener('mousedown', (e) => {
   if (e.button !== 0) return;
-  if ((e.target as HTMLElement).closest('button, input, .overlay:not(#pause)')) return;
+  if ((e.target as HTMLElement).closest('button, input, label, .overlay:not(#pause)')) return;
   if (mode === 'paused') return resume();
   if (mode !== 'playing' || S.spectating) return;
   if (view === 'sense') return senseClick(e.clientX, e.clientY);
   if (document.pointerLockElement !== huntCanvas) lock();
   if (S.role === 'monster') tryCatch();
 });
-$('pause').addEventListener('mousedown', () => { if (mode === 'paused') resume(); });
+$('pause').addEventListener('mousedown', (e) => {
+  if ((e.target as HTMLElement).closest('label')) return; // the settings toggle
+  if (mode === 'paused') resume();
+});
 
 window.addEventListener('resize', () => {
   S.world.resize();
@@ -417,6 +441,26 @@ function clockText(t: number) {
   return `${h === 0 ? 12 : h}:${String(m).padStart(2, '0')} AM`;
 }
 
+/** Show the camcorder overlay while looking through the hunt view with the look on. */
+let camShown = false;
+function syncCam() {
+  const show = footage && view === 'hunt' && !S?.spectating && (mode === 'playing' || mode === 'paused' || mode === 'catching');
+  if (show === camShown) return;
+  camShown = show;
+  $('cam').hidden = !show;
+  document.body.classList.toggle('footage', show);
+}
+
+const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+function updateCam(t: number) {
+  // The tape counter runs with the night; the date stamp was never set right.
+  const s = Math.floor(t);
+  $('tape').textContent = `SP ${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+  const d = new Date();
+  const [hm, ap] = clockText(t).split(' ');
+  $('stamp').innerHTML = `${ap} ${hm}<br>${MONTHS[d.getMonth()]}. ${d.getDate()} 1996`;
+}
+
 function bar(id: string, v: number) {
   const el = $(id) as HTMLElement;
   el.style.width = `${Math.max(0, Math.min(100, v))}%`;
@@ -426,6 +470,7 @@ function bar(id: string, v: number) {
 function updateHud() {
   const g = S.game;
   $('clock').textContent = clockText(g.t);
+  if (camShown) updateCam(g.t);
   $('sub').textContent = S.net ? `Online · ${S.role === 'monster' ? 'you are the monster' : 'you are human'}` : `Night 1 · Level 0 · seed ${S.seed}`;
   const stars = CFG.STARS.filter((s) => g.score >= s).length;
   $('stars').textContent = S.role === 'monster' ? '★'.repeat(stars) + '☆'.repeat(3 - stars) : '';
@@ -565,6 +610,9 @@ function frame(now: number) {
 
   S.world.update(t, mode === 'catching' && S.role === 'monster' ? 1 : g.monster.seen && S.role === 'monster' ? 0.25 : 0);
   S.sound.update((i) => S.world.circuitLevel(i, t));
+  syncCam();
+  // A human's camera breaks up as the monster gets close, walls or no walls.
+  S.world.interference = me && !S.spectating ? Math.max(0, 1 - Math.hypot(me.x - g.monster.x, me.z - g.monster.z) / 10) : 0;
   if (view === 'hunt' || mode === 'title' || mode === 'menu') S.world.render();
   else {
     S.world.updateListener();

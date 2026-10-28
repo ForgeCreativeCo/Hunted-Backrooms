@@ -4,10 +4,20 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>HUM — prototype</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet" />
   </head>
   <body>
     <canvas id="hunt"></canvas>
     <canvas id="sense" hidden></canvas>
+
+    <div id="cam" hidden>
+      <div class="bracket tl"></div><div class="bracket tr"></div><div class="bracket bl"></div><div class="bracket br"></div>
+      <div id="rec"><span class="dot"></span>REC <span id="tape">SP 0:00:00</span></div>
+      <div id="nightshot" hidden>NIGHTSHOT</div>
+      <div id="stamp"></div>
+    </div>
 
     <div id="hud" hidden>
       <div id="tl">
@@ -72,6 +82,7 @@
         <button id="solo" class="primary">Play solo</button>
         <button id="multi">Multiplayer</button>
       </div>
+      <label class="toggle"><input type="checkbox" class="opt-footage" /> Found footage look</label>
       <p class="seed" id="seedline"></p>
     </div>
 
@@ -104,6 +115,7 @@
     <div class="overlay" id="pause" hidden>
       <h2>Paused</h2>
       <p class="go">Click to resume</p>
+      <label class="toggle"><input type="checkbox" class="opt-footage" /> Found footage look</label>
     </div>
 
     <div class="overlay black" id="catch" hidden>

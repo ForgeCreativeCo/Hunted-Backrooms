@@ -82,6 +82,84 @@ const HuntShader = {
     }`,
 };
 
+// The found-footage look: an old camcorder on worn tape. Runs after tone mapping, on
+// the final image: soft tape resolution, colour smeared to one side, interlaced
+// lines, a tracking band rolling up the frame, snow, the odd tear, and the
+// viewfinder's rounded corners. Interference pushes all of it harder.
+const FootageShader = {
+  uniforms: {
+    tDiffuse: { value: null },
+    time: { value: 0 },
+    res: { value: new THREE.Vector2(1, 1) },
+    glitch: { value: 0 },
+    focus: { value: 0 },
+  },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    uniform float time;
+    uniform vec2 res;
+    uniform float glitch;
+    uniform float focus;
+    varying vec2 vUv;
+    float rand(vec2 co) { return fract(sin(dot(co, vec2(12.9898, 78.233))) * 43758.5453); }
+    vec3 toYiq(vec3 c) { return vec3(dot(c, vec3(0.299, 0.587, 0.114)), dot(c, vec3(0.596, -0.274, -0.322)), dot(c, vec3(0.211, -0.523, 0.312))); }
+    vec3 toRgb(vec3 c) { return vec3(c.x + 0.956 * c.y + 0.621 * c.z, c.x - 0.272 * c.y - 0.647 * c.z, c.x - 1.106 * c.y + 1.703 * c.z); }
+    void main() {
+      vec2 c = vUv - 0.5;
+      vec2 uv = 0.5 + c * (1.0 + 0.05 * dot(c, c));
+      float line = floor(vUv.y * res.y * 0.5);
+
+      // The tracking band, rolling slowly up the frame.
+      float band = smoothstep(0.035, 0.0, abs(vUv.y - fract(time * 0.06)));
+      uv.x += band * (rand(vec2(line, floor(time * 30.0))) - 0.5) * 0.02;
+      // Tears: whole strips of the picture thrown sideways.
+      float strip = floor(vUv.y * 36.0);
+      uv.x += glitch * step(0.55, rand(vec2(strip, floor(time * 20.0)))) * (rand(vec2(strip, time)) - 0.5) * 0.12;
+      // Every line wobbles a little.
+      uv.x += (rand(vec2(line, floor(time * 60.0))) - 0.5) * (0.0012 + glitch * 0.004);
+
+      // Tape can't hold much detail: soft luma, and colour smeared out to the right.
+      vec2 px = 1.0 / res;
+      float soft = 1.3 + focus * 5.0;
+      float y = toYiq(texture2D(tDiffuse, uv).rgb).x * 0.4
+        + toYiq(texture2D(tDiffuse, uv + vec2(px.x * soft, 0.0)).rgb).x * 0.2
+        + toYiq(texture2D(tDiffuse, uv - vec2(px.x * soft, 0.0)).rgb).x * 0.2
+        + toYiq(texture2D(tDiffuse, uv + vec2(0.0, px.y * soft)).rgb).x * 0.1
+        + toYiq(texture2D(tDiffuse, uv - vec2(0.0, px.y * soft)).rgb).x * 0.1;
+      vec2 iq = vec2(0.0);
+      for (int i = 0; i < 6; i++) iq += toYiq(texture2D(tDiffuse, uv + vec2(px.x * (2.0 + float(i) * 3.0 + glitch * 12.0), 0.0)).rgb).yz;
+      iq /= 6.0;
+      // A little sharpening halo, like a cheap camera's edge enhancement.
+      float yc = toYiq(texture2D(tDiffuse, uv).rgb).x;
+      y += (yc - y) * 0.6;
+      vec3 col = toRgb(vec3(y, iq * 0.78));
+
+      // Lifted blacks, clipped whites, a sickly green cast.
+      col = col * 0.9 + vec3(0.03, 0.036, 0.032);
+      col *= vec3(0.96, 1.02, 0.94);
+      col = min(col, vec3(0.96));
+
+      // Interlaced lines.
+      col *= 0.92 + 0.08 * mod(floor(gl_FragCoord.y), 2.0);
+      // Tape noise, snow streaks, and the band's brighter smear.
+      col += (rand(uv * res + fract(time * 91.0)) - 0.5) * (0.05 + glitch * 0.1);
+      float snow = step(0.9993 - glitch * 0.02 - band * 0.01, rand(vec2(line, floor(time * 24.0) + floor(vUv.x * 24.0))));
+      col += snow * 0.35;
+      col += band * 0.035;
+      // A rolling brightness flutter, like a tired head drum.
+      col *= 1.0 + 0.015 * sin(vUv.y * 6.0 - time * 3.0);
+
+      // The viewfinder's rounded black corners.
+      vec2 q = abs(vUv - 0.5) - (0.5 - 0.06);
+      float corner = length(max(q, 0.0));
+      col *= smoothstep(0.06, 0.045, corner);
+      gl_FragColor = vec4(col, 1.0);
+    }`,
+};
+
 type Surf = 'FLOOR' | 'WALL' | 'CEIL' | 'TRIM' | 'PROP';
 
 /**
@@ -212,6 +290,15 @@ export class World3D {
   camera: THREE.PerspectiveCamera;
   private composer: EffectComposer;
   private hunt: ShaderPass;
+  private footagePass: ShaderPass;
+  /** The found-footage camcorder look, on or off. */
+  footage = true;
+  /** 0..1: how much a nearby monster is breaking up the picture (set for humans). */
+  interference = 0;
+  private glitchUntil = 0;
+  private nextGlitch = 0;
+  private focusUntil = 0;
+  private nextFocus = 0;
   private walls: THREE.InstancedMesh;
   private trim: THREE.InstancedMesh;
   private outlets: THREE.InstancedMesh;
@@ -422,6 +509,9 @@ export class World3D {
     this.hunt = new ShaderPass(HuntShader);
     this.composer.addPass(this.hunt);
     this.composer.addPass(new OutputPass());
+    this.footagePass = new ShaderPass(FootageShader);
+    this.composer.addPass(this.footagePass);
+    this.setFootageRes();
 
     this.rebuildWalls();
   }
@@ -537,6 +627,11 @@ export class World3D {
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.composer.setSize(window.innerWidth, window.innerHeight);
+    this.setFootageRes();
+  }
+
+  private setFootageRes() {
+    this.renderer.getDrawingBufferSize(this.footagePass.uniforms.res.value);
   }
 
   private rebuildWalls() {
@@ -695,6 +790,14 @@ export class World3D {
       this.camera.position.set(m.x, CFG.EYE_HEIGHT + sway, m.z);
       this.camera.rotation.set(m.pitch, m.yaw, 0);
     }
+    if (this.footage) {
+      // Someone is holding the camera: it drifts, and shakes more on the move.
+      const moving = human ? human.moving : m.moving;
+      const k = (moving ? 2.2 : 1) * (1 + this.interference);
+      this.camera.rotation.x += (Math.sin(t * 1.1 + 2) * 0.5 + Math.sin(t * 2.9) * 0.25 + Math.sin(t * 7.3) * 0.06 * k) * 0.006 * k;
+      this.camera.rotation.y += (Math.sin(t * 0.9) * 0.6 + Math.sin(t * 2.3 + 1) * 0.3) * 0.005 * k;
+      this.camera.rotation.z += Math.sin(t * 0.7 + 4) * 0.008 * k + Math.sin(t * 3.1) * 0.002 * k;
+    }
     const vx = this.camera.position.x, vz = this.camera.position.z;
     this.camera.updateMatrixWorld();
 
@@ -757,6 +860,26 @@ export class World3D {
     this.hunt.uniforms.nvFlash.value = this.nvFlash;
     this.hunt.uniforms.fear.value = human ? Math.max(0, (human.fear - 25) / 75) : 0;
     this.hunt.uniforms.lens.value = human ? 0.4 : 1;
+
+    this.footagePass.enabled = this.footage;
+    if (this.footage) {
+      const u = this.footagePass.uniforms;
+      // Now and then the tape tears; near the monster it barely holds together.
+      if (t >= this.nextGlitch) {
+        this.glitchUntil = t + 0.08 + Math.random() * 0.3;
+        this.nextGlitch = t + (this.interference > 0.05 ? 0.4 + Math.random() * 2.5 * (1 - this.interference) : 7 + Math.random() * 18);
+      }
+      const tear = t < this.glitchUntil ? 0.6 + Math.random() * 0.4 : 0;
+      u.glitch.value = Math.min(1, Math.max(tear, this.interference * 0.35 * (0.6 + Math.random() * 0.4)) + this.nvFlash * 0.6);
+      // The autofocus hunts every so often, and in the dark.
+      if (t >= this.nextFocus) {
+        this.focusUntil = t + 0.5 + Math.random() * 0.6;
+        this.nextFocus = t + 10 + Math.random() * 20 * (0.3 + here);
+      }
+      const hunting = t < this.focusUntil ? Math.sin(((this.focusUntil - t) / 1.1) * Math.PI) : 0;
+      u.focus.value = Math.max(0, hunting);
+      u.time.value = t;
+    }
   }
 
   /** Move the light pool to the nearest lit fixtures the camera can see. */
