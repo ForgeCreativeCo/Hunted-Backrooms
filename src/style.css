@@ -106,6 +106,7 @@ kbd {
 .overlay[hidden] { display: none; }
 .overlay.black { background: #000; }
 h1 { font-size: clamp(64px, 14vw, 140px); letter-spacing: 0.4em; margin: 0 0 0 0.4em; font-weight: 300; color: #f2e6b0; text-shadow: 0 0 30px rgba(255, 220, 120, 0.35); }
+h1 .subtitle { display: block; font-size: clamp(14px, 2.6vw, 22px); letter-spacing: 0.5em; margin: 2px 0 0 0.1em; color: #c9bd8a; text-shadow: none; opacity: 0.85; }
 h2 { font-size: 36px; letter-spacing: 0.25em; font-weight: 300; margin: 0 0 12px; }
 .pitch { color: var(--dim); max-width: 560px; }
 .cols { display: flex; gap: 40px; flex-wrap: wrap; justify-content: center; margin: 18px 0; text-align: left; }

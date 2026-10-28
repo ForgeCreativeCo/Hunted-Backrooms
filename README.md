@@ -1,4 +1,4 @@
-# HUM — prototype
+# HUM: A Backroom Story
 
 You play the thing in the Backrooms, hunting the people who noclip in and feeding on their fear before they find an exit. Play it solo against AI prey, or online: one player is the monster, up to four play the humans.
 
