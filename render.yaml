@@ -1,0 +1,12 @@
+# The multiplayer game server on Render (render.com → New → Blueprint → this repo).
+# It also serves the game itself, so this URL works on its own; the Netlify build
+# can point at it with VITE_SERVER_URL.
+services:
+  - type: web
+    name: hum-server
+    runtime: node
+    plan: free
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /
+    autoDeploy: true

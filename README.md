@@ -50,7 +50,9 @@ npm run build
 npm start
 ```
 
-`npm start` runs one Node process that serves the built game and the WebSocket on `PORT` (default 8787). Netlify and other static hosts can't run it; use a host with long-running Node processes such as Render, Fly.io or Railway. Point it at `npm install && npm run build` to build and `npm start` to run.
+`npm start` runs one Node process that serves the built game and the WebSocket on `PORT` (default 8787). Netlify and other static hosts can't run it; use a host with long-running Node processes such as Render, Fly.io or Railway. Point it at `npm install && npm run build` to build and `npm start` to run. `render.yaml` sets this up on Render (New → Blueprint).
+
+To keep the game itself on Netlify, set the Netlify build's environment variable `VITE_SERVER_URL` to the server's address (for example `https://hum-server.onrender.com`) and redeploy. Without it, the Netlify copy plays solo only. Render's free plan puts the server to sleep when idle, so the first visit after a while can take about a minute to connect.
 
 ## Checks
 

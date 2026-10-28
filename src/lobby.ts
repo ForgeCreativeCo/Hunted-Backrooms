@@ -47,7 +47,9 @@ export class Lobby {
       await this.net.connect(); // the server sends the room list on connect
       this.status('');
     } catch {
-      this.status('Could not reach the game server. Is it running? (npm run dev)');
+      this.status(import.meta.env.DEV
+        ? 'Could not reach the game server. Is it running? (npm run dev)'
+        : 'Could not reach the game server. It may be offline or waking up; try again in a minute.');
     }
   }
 
