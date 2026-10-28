@@ -5,7 +5,7 @@ import { RNG } from './rng';
 export type WState = 'explore' | 'alert' | 'flee' | 'hide' | 'escape' | 'panic' | 'chalk' | 'confused';
 
 export interface GameEvents {
-  sound(kind: 'step' | 'scream' | 'blackout' | 'lightsOn' | 'shift' | 'chalk' | 'gasp' | 'catch', x: number, z: number, loud: number): void;
+  sound(kind: 'step' | 'scream' | 'blackout' | 'lightsOn' | 'shift' | 'chalk' | 'gasp' | 'catch' | 'roar' | 'escape', x: number, z: number, loud: number): void;
   caption(text: string, who: Wanderer | null): void;
   toast(text: string): void;
 }
@@ -310,6 +310,7 @@ export class Game {
         this.addFear(w, dm < 2 * L.CS ? 30 : 15);
         this.say(w, LINES.seen);
         this.events.sound('gasp', w.x, w.z, 1);
+        if (dm < 2 * L.CS) this.events.sound('roar', m.x, m.z, 1);
       }
       this.addFear(w, (dm < 2 * L.CS ? 22 : 9) * dt);
       w.seenT = this.t;
@@ -466,6 +467,7 @@ export class Game {
 
     if (L.exitCells.has(w.cell)) {
       w.escaped = true;
+      this.events.sound('escape', w.x, w.z, 1);
       this.events.toast(`${w.name} found an exit and escaped`);
       this.events.caption('I\'m out. I\'m OUT.', w);
       return;

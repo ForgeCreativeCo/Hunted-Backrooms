@@ -47,7 +47,7 @@ const world = new World3D(game, huntCanvas);
 const sense = new SenseView(senseCanvas, game);
 sound = new Sound(game, world.camera, world.scene);
 
-if (import.meta.env.DEV) Object.assign(window, { hum: { game, world, sense } });
+if (import.meta.env.DEV) Object.assign(window, { hum: { game, world, sense, sound } });
 
 $('seedline').textContent = `Night 1 · seed ${seed}`;
 $('quota').textContent = String(CFG.QUOTA);

@@ -1,16 +1,27 @@
 import * as THREE from 'three';
 import { Game } from './game';
 
-// All sound is synthesized; placeholder, but positional, because sound is a mechanic.
+// Recorded clips for the big moments (public/audio), synthesized sound for the rest.
+// Positional where it matters, because sound is a mechanic.
+const CLIPS = ['ambience', 'roar', 'distant-screams', 'wail', 'jumpscare'] as const;
+type Clip = (typeof CLIPS)[number];
+// The roar file holds several separate roars: [start, length] in seconds.
+const ROARS = [[0, 2.1], [2.9, 2.2], [5.4, 1.6], [9.4, 2.2], [12.4, 1.6]];
+
 export class Sound {
   listener = new THREE.AudioListener();
   ctx: AudioContext;
   private noiseBuf: AudioBuffer;
   private hums: { gain: GainNode; audio: THREE.PositionalAudio }[] = [];
   private master: GainNode;
+  private clips = new Map<Clip, AudioBuffer>();
+  private ambience: AudioBufferSourceNode | null = null;
+  private nextDistant = 0;
+  private camera: THREE.Camera;
 
   constructor(game: Game, camera: THREE.Camera, scene: THREE.Scene) {
     camera.add(this.listener);
+    this.camera = camera;
     this.ctx = this.listener.context;
     this.master = this.ctx.createGain();
     this.master.gain.value = 0.9;
@@ -52,10 +63,60 @@ export class Sound {
       scene.add(audio);
       this.hums.push({ gain, audio });
     }
+
+    for (const name of CLIPS) {
+      fetch(`audio/${name}.mp3`)
+        .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(r.status)))
+        .then((b) => this.ctx.decodeAudioData(b))
+        .then((buf) => {
+          this.clips.set(name, buf);
+          if (name === 'ambience') this.startAmbience();
+        })
+        .catch(() => { /* fall back to synthesized sound */ });
+    }
+  }
+
+  /** Play a clip, optionally just a section of it, fading out at the end of the section. */
+  private clip(name: Clip, dest: AudioNode, vol: number, rate = 1, offset = 0, length?: number): boolean {
+    const buf = this.clips.get(name);
+    if (!buf) return false;
+    const t = this.ctx.currentTime;
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    src.playbackRate.value = rate;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(vol, t);
+    src.connect(g).connect(dest);
+    if (length) {
+      const end = t + length / rate;
+      g.gain.setValueAtTime(vol, end - 0.3);
+      g.gain.linearRampToValueAtTime(0, end);
+      src.start(t, offset, length);
+    } else {
+      src.start(t, offset);
+    }
+    return true;
+  }
+
+  /** The room tone under everything, looping for the whole night. */
+  private startAmbience() {
+    const buf = this.clips.get('ambience');
+    if (!buf || this.ambience || this.ctx.state !== 'running') return;
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    src.loopEnd = buf.duration - 0.5; // the file dips to silence at the very end
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0, this.ctx.currentTime);
+    g.gain.linearRampToValueAtTime(0.45, this.ctx.currentTime + 4);
+    src.connect(g).connect(this.master);
+    src.start();
+    this.ambience = src;
   }
 
   resume() {
-    if (this.ctx.state !== 'running') this.ctx.resume();
+    if (this.ctx.state !== 'running') this.ctx.resume().then(() => this.startAmbience());
+    else this.startAmbience();
   }
 
   setCircuit(i: number, level: number) {
@@ -126,11 +187,23 @@ export class Sound {
         break;
       }
       case 'catch': {
+        // Starts on the hit, so it lands with the cut to black.
+        if (this.clip('jumpscare', this.master, 0.9, 1, 0.9, 4)) break;
         const p = this.panner(x, z, 1.6);
         this.tone(p, 'sawtooth', 700, 220, 1.4, 0.35);
         this.noise(this.master, 1.2, 90, 0.7, 0.8, 'lowpass');
         break;
       }
+      case 'roar': {
+        // Your own voice, when someone sees you up close.
+        const [at, len] = ROARS[Math.floor(Math.random() * ROARS.length)];
+        this.clip('roar', this.master, 0.55, 0.95 + Math.random() * 0.1, at, len);
+        break;
+      }
+      case 'escape':
+        // Prey slipping out: the building wails for what it lost.
+        this.clip('wail', this.master, 0.6);
+        break;
       case 'blackout':
         this.noise(this.panner(x, z, 2.6), 0.12, 2000, 2, 0.5);
         this.tone(this.panner(x, z, 2.6), 'square', 120, 40, 0.5, 0.1);
@@ -155,5 +228,20 @@ export class Sound {
   /** Called each frame with per-circuit light levels so the hum follows the lights. */
   update(levels: (i: number) => number) {
     for (let i = 0; i < this.hums.length; i++) this.setCircuit(i, levels(i));
+
+    // Now and then, something else screams far off in the Backrooms.
+    const now = this.ctx.currentTime;
+    if (this.ctx.state === 'running' && this.clips.has('distant-screams')) {
+      if (this.nextDistant === 0) this.nextDistant = now + 40 + Math.random() * 40;
+      else if (now >= this.nextDistant) {
+        this.nextDistant = now + 60 + Math.random() * 70;
+        const p = new THREE.Vector3();
+        this.camera.getWorldPosition(p);
+        const a = Math.random() * Math.PI * 2, d = 25 + Math.random() * 15;
+        const pan = this.panner(p.x + Math.cos(a) * d, p.z + Math.sin(a) * d, 1.5);
+        pan.refDistance = 12;
+        this.clip('distant-screams', pan, 0.9, 0.85 + Math.random() * 0.25);
+      }
+    }
   }
 }

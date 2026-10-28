@@ -23,6 +23,18 @@ Open the printed URL in a desktop browser. Every night has a seed in the URL (`?
 - Fear meters, dread, Blackout, Shift, Seep, chalk erase/redraw
 - Catching, fear scoring, an 8-minute night, stars and a quota
 
+## Sound
+
+Recorded clips live in `public/audio`; everything else is synthesized in `src/audio.ts`.
+
+| File | Plays when | Source file (Pixabay uploader) |
+| --- | --- | --- |
+| `ambience.mp3` | Looping room tone all night | backrooms-ambience-2 (godbi_3) |
+| `roar.mp3` | A wanderer sees you up close (one of five roars, picked at random) | glitchy-roar (distancingmyselffromthis) |
+| `jumpscare.mp3` | You catch someone | backrooms-smiler-jumpscare (unr3al_backr00ms) |
+| `wail.mp3` | A wanderer escapes | creature-wail (distancingmyselffromthis) |
+| `distant-screams.mp3` | Every minute or two, somewhere far off | creature-screams-in-the-distance (distancingmyselffromthis) |
+
 ## Layout
 
 | File | What it does |
