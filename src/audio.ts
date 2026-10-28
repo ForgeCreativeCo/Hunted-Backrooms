@@ -3,11 +3,15 @@ import { Game, Wanderer } from './game';
 
 // Recorded clips for the big moments (public/audio), synthesized sound for the rest.
 // Positional where it matters, because sound is a mechanic.
-const CLIPS = ['ambience', 'roar', 'distant-screams', 'wail', 'jumpscare', 'scream-a', 'scream-b', 'breathing-1', 'breathing-2', 'music'] as const;
+const CLIPS = ['ambience', 'roar', 'distant-screams', 'wail', 'jumpscare', 'scream-a', 'scream-b', 'breathing-1', 'breathing-2', 'music', 'terror'] as const;
 type Clip = (typeof CLIPS)[number];
 // The roar file holds several separate roars: [start, length] in seconds.
 // How loud the PA music is right under the speaker; it fades with distance from there.
 const MUSIC_VOL = 0.32;
+// The terror bed is the opposite: silent near the PA, full by the outer walls.
+const TERROR_VOL = 0.5;
+const TERROR_NEAR = 6; // metres from the speaker where it's gone
+const TERROR_FAR = 30; // and where it's at full volume
 const ROARS = [[0, 2.1], [2.9, 2.2], [5.4, 1.6], [9.4, 2.2], [12.4, 1.6]];
 
 export class Sound {
@@ -22,6 +26,8 @@ export class Sound {
   private musicLevel: GainNode | null = null;
   private musicOut: PannerNode | null = null;
   private hiss: AudioBufferSourceNode | null = null;
+  private terror: AudioBufferSourceNode | null = null;
+  private terrorLevel: GainNode | null = null;
   private nextDropout = 0;
   private nextDistant = 0;
   private nextBeat = 0;
@@ -85,6 +91,7 @@ export class Sound {
           this.clips.set(name, buf);
           if (name === 'ambience') this.startAmbience();
           if (name === 'music') this.startMusic();
+          if (name === 'terror') this.startTerror();
         })
         .catch(() => { /* fall back to synthesized sound */ });
     }
@@ -126,6 +133,21 @@ export class Sound {
     src.connect(g).connect(this.master);
     src.start();
     this.ambience = src;
+  }
+
+  /** The terror bed: loops all night, its level set each frame by distance from the PA. */
+  private startTerror() {
+    const buf = this.clips.get('terror');
+    if (!buf || this.terror || this.ctx.state !== 'running') return;
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    const level = this.ctx.createGain();
+    level.gain.value = 0;
+    src.connect(level).connect(this.master);
+    src.start();
+    this.terror = src;
+    this.terrorLevel = level;
   }
 
   /**
@@ -266,6 +288,7 @@ export class Sound {
     const start = () => {
       this.startAmbience();
       this.startMusic();
+      this.startTerror();
     };
     if (this.ctx.state !== 'running') this.ctx.resume().then(start);
     else start();
@@ -478,6 +501,7 @@ export class Sound {
     try { this.ambience?.stop(); } catch { /* already stopped */ }
     try { this.music?.stop(); } catch { /* already stopped */ }
     try { this.hiss?.stop(); } catch { /* already stopped */ }
+    try { this.terror?.stop(); } catch { /* already stopped */ }
     this.master.disconnect();
     this.listener.gain.disconnect();
     this.listener.removeFromParent();
@@ -488,6 +512,13 @@ export class Sound {
     for (let i = 0; i < this.hums.length; i++) this.setCircuit(i, levels(i));
 
     const now = this.ctx.currentTime;
+    if (this.terrorLevel) {
+      // Out by the walls the terror takes over; walking in toward the PA it gives way to the music.
+      const p = new THREE.Vector3();
+      this.camera.getWorldPosition(p);
+      const k = Math.min(1, Math.max(0, (Math.hypot(p.x - this.pa.x, p.z - this.pa.z) - TERROR_NEAR) / (TERROR_FAR - TERROR_NEAR)));
+      this.terrorLevel.gain.setTargetAtTime(TERROR_VOL * k * k * (3 - 2 * k), now, 0.8);
+    }
     if (this.music && now >= this.nextDropout) {
       this.nextDropout = now + 25 + Math.random() * 45;
       this.musicDropout();
