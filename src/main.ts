@@ -35,7 +35,7 @@ function caption(text: string, who: string) {
 
 let sound: Sound | null = null;
 const events: GameEvents = {
-  sound: (k, x, z, l) => sound?.play(k, x, z, l),
+  sound: (k, x, z, l, who) => sound?.play(k, x, z, l, who),
   caption: (text, w) => caption(text, w ? w.name : ''),
   toast,
 };

@@ -34,6 +34,8 @@ Recorded clips live in `public/audio`; everything else is synthesized in `src/au
 | `jumpscare.mp3` | You catch someone | backrooms-smiler-jumpscare (unr3al_backr00ms) |
 | `wail.mp3` | A wanderer escapes | creature-wail (distancingmyselffromthis) |
 | `distant-screams.mp3` | Every minute or two, somewhere far off | creature-screams-in-the-distance (distancingmyselffromthis) |
+| `scream-a.mp3`, `scream-b.mp3` | A wanderer panics, sees you face to face, or is caught. Each wanderer has one of the two voices | scared-woman-scream, male-horror-scream (universfield) |
+| `breathing-1.mp3`, `breathing-2.mp3` | A scared, winded or hiding wanderer, audible only up close. Hiding in the dark, they hold their breath | scared_breathing1, scared-breathing-2 (freesound_community) |
 
 ## Layout
 

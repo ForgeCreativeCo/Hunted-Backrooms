@@ -1,9 +1,9 @@
 import * as THREE from 'three';
-import { Game } from './game';
+import { Game, Wanderer } from './game';
 
 // Recorded clips for the big moments (public/audio), synthesized sound for the rest.
 // Positional where it matters, because sound is a mechanic.
-const CLIPS = ['ambience', 'roar', 'distant-screams', 'wail', 'jumpscare'] as const;
+const CLIPS = ['ambience', 'roar', 'distant-screams', 'wail', 'jumpscare', 'scream-a', 'scream-b', 'breathing-1', 'breathing-2'] as const;
 type Clip = (typeof CLIPS)[number];
 // The roar file holds several separate roars: [start, length] in seconds.
 const ROARS = [[0, 2.1], [2.9, 2.2], [5.4, 1.6], [9.4, 2.2], [12.4, 1.6]];
@@ -17,6 +17,7 @@ export class Sound {
   private clips = new Map<Clip, AudioBuffer>();
   private ambience: AudioBufferSourceNode | null = null;
   private nextDistant = 0;
+  private breathUntil = new Map<number, number>();
   private camera: THREE.Camera;
 
   constructor(game: Game, camera: THREE.Camera, scene: THREE.Scene) {
@@ -168,7 +169,7 @@ export class Sound {
     o.stop(t + dur + 0.05);
   }
 
-  play(kind: string, x: number, z: number, loud: number) {
+  play(kind: string, x: number, z: number, loud: number, who?: Wanderer) {
     if (this.ctx.state !== 'running') return;
     switch (kind) {
       case 'step':
@@ -181,6 +182,7 @@ export class Sound {
         this.noise(this.panner(x, z, 1.6), 0.4, 1200, 0.8, 0.4);
         break;
       case 'scream': {
+        if (who && this.clip(who.voice ? 'scream-b' : 'scream-a', this.panner(x, z, 1.6), 0.6 + 0.4 * loud, 0.95 + Math.random() * 0.1)) break;
         const p = this.panner(x, z, 1.6);
         this.tone(p, 'sawtooth', 620, 380, 1.1 * loud + 0.3, 0.25);
         this.tone(p, 'square', 900, 500, 0.9 * loud + 0.3, 0.06);
@@ -192,6 +194,21 @@ export class Sound {
         const p = this.panner(x, z, 1.6);
         this.tone(p, 'sawtooth', 700, 220, 1.4, 0.35);
         this.noise(this.master, 1.2, 90, 0.7, 0.8, 'lowpass');
+        break;
+      }
+      case 'breath': {
+        // Recorded quietly, so boosted; positional, so only audible up close.
+        if (!who || this.ctx.currentTime < (this.breathUntil.get(who.id) ?? 0)) break;
+        const p = this.panner(x, z, 1.5);
+        p.refDistance = 1.2;
+        p.rolloffFactor = 2;
+        if (Math.random() < 0.5) {
+          this.clip('breathing-1', p, 6 * loud);
+          this.breathUntil.set(who.id, this.ctx.currentTime + 3.6);
+        } else {
+          this.clip('breathing-2', p, 6 * loud, 1, Math.random() * 5.5, 3.5);
+          this.breathUntil.set(who.id, this.ctx.currentTime + 3.5);
+        }
         break;
       }
       case 'roar': {

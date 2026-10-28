@@ -5,7 +5,10 @@ import { RNG } from './rng';
 export type WState = 'explore' | 'alert' | 'flee' | 'hide' | 'escape' | 'panic' | 'chalk' | 'confused';
 
 export interface GameEvents {
-  sound(kind: 'step' | 'scream' | 'blackout' | 'lightsOn' | 'shift' | 'chalk' | 'gasp' | 'catch' | 'roar' | 'escape', x: number, z: number, loud: number): void;
+  sound(
+    kind: 'step' | 'scream' | 'blackout' | 'lightsOn' | 'shift' | 'chalk' | 'gasp' | 'catch' | 'roar' | 'escape' | 'breath',
+    x: number, z: number, loud: number, who?: Wanderer,
+  ): void;
   caption(text: string, who: Wanderer | null): void;
   toast(text: string): void;
 }
@@ -71,6 +74,9 @@ export class Wanderer {
   heardZ = 0;
   stepT = 0;
   breathT = 0;
+  breathSndT = 0;
+  /** Which recorded voice this wanderer screams with. */
+  voice = 0;
   jx = 0;
   jz = 0;
   walkPhase = 0;
@@ -135,7 +141,9 @@ export class Game {
     const kinds: Kind[] = ['panicker', 'mapper', 'panicker'];
     const names = this.rng.shuffle([...NAMES]);
     kinds.forEach((k, i) => {
-      this.wanderers.push(new Wanderer(i, k, names[i], CFG.WANDERER_ENTRY[i] ?? i * 25, this.level.cells));
+      const w = new Wanderer(i, k, names[i], CFG.WANDERER_ENTRY[i] ?? i * 25, this.level.cells);
+      w.voice = this.rng.int(2);
+      this.wanderers.push(w);
     });
   }
 
@@ -309,8 +317,13 @@ export class Game {
       if (!saw && this.t - w.seenT > 4) {
         this.addFear(w, dm < 2 * L.CS ? 30 : 15);
         this.say(w, LINES.seen);
-        this.events.sound('gasp', w.x, w.z, 1);
-        if (dm < 2 * L.CS) this.events.sound('roar', m.x, m.z, 1);
+        if (dm < 2 * L.CS) {
+          // Face to face: they scream, and you answer.
+          this.events.sound('scream', w.x, w.z, 1, w);
+          this.events.sound('roar', m.x, m.z, 1);
+        } else {
+          this.events.sound('gasp', w.x, w.z, 1);
+        }
       }
       this.addFear(w, (dm < 2 * L.CS ? 22 : 9) * dt);
       w.seenT = this.t;
@@ -337,7 +350,7 @@ export class Game {
     if (w.fear >= 100 && w.state !== 'panic') {
       this.setState(w, 'panic');
       this.say(w, LINES.panic);
-      this.events.sound('scream', w.x, w.z, 0.6);
+      this.events.sound('scream', w.x, w.z, 0.6, w);
     }
 
     // State timers.
@@ -432,6 +445,15 @@ export class Game {
         const holdingBreath = w.state === 'hide' && !lit;
         if (!holdingBreath) this.emitNoise(w, w.state === 'hide' ? 0.35 : 0.55, false);
       }
+    }
+
+    // Scared or winded people breathe hard enough to hear up close. Hiding in
+    // the dark, they hold it.
+    w.breathSndT -= dt;
+    const winded = w.exhausted || (standing && (w.fear > 45 || w.state === 'hide'));
+    if (winded && w.breathSndT <= 0 && !(w.state === 'hide' && !lit)) {
+      w.breathSndT = 3.5;
+      this.events.sound('breath', w.x, w.z, w.exhausted ? 1 : 0.7, w);
     }
 
     // Exits come into view.
@@ -728,6 +750,7 @@ export class Game {
     this.score += pts;
     w.caught = true;
     this.events.sound('catch', w.x, w.z, 1);
+    this.events.sound('scream', w.x, w.z, 1, w);
     this.events.toast(`${w.name} caught · +${pts} fear`);
     // Everyone nearby hears the scream.
     const r = 12 * this.level.CS;
