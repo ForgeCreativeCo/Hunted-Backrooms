@@ -1,18 +1,21 @@
 import * as THREE from 'three';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
-import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { CFG } from './config';
-import { Game, Wanderer } from './game';
+import { Game } from './game';
+import { Person } from './person';
+import { hashString } from './rng';
 import * as T from './textures';
 
-const LIT = new THREE.Color(1, 1, 1);
-const DARK = new THREE.Color(0.09, 0.1, 0.14); // the monster sees a little in the dark
-const PANEL_ON = new THREE.Color(1.6, 1.55, 1.3);
-const PANEL_OFF = new THREE.Color(0.05, 0.05, 0.06);
-const FOG_LIT = new THREE.Color(0x2b2613);
-const FOG_DARK = new THREE.Color(0x050608);
+const PANEL_ON = new THREE.Color(2.4, 2.35, 2.1);
+const PANEL_OFF = new THREE.Color(0.03, 0.03, 0.035);
+const FOG_LIT = new THREE.Color(0x3a321a);
+const FOG_DARK = new THREE.Color(0x040507);
+const POOL = 8; // real point lights, moved to the nearest visible fixtures each frame
+const POOL_REACH = 18;
 
 // Film grain, a slight colour fringe and a vignette: the monster's eyes.
 const HuntShader = {
@@ -37,18 +40,119 @@ const HuntShader = {
       float d = dot(c, c);
       vec2 uv = 0.5 + c * (1.0 + 0.08 * d);
       uv.x += seep * 0.006 * sin(uv.y * 40.0 + time * 6.0);
-      float ab = 0.004 + 0.012 * d + seep * 0.01;
+      float ab = 0.003 + 0.01 * d + seep * 0.01;
       vec3 col;
       col.r = texture2D(tDiffuse, uv + c * ab).r;
       col.g = texture2D(tDiffuse, uv).g;
       col.b = texture2D(tDiffuse, uv - c * ab).b;
-      col += (rand(uv * 900.0 + fract(time * 7.0)) - 0.5) * 0.09;
-      col *= 0.96 + 0.04 * sin(uv.y * 900.0 + time * 12.0);
-      col *= 1.0 - d * 1.6;
+      float lum = dot(col, vec3(0.299, 0.587, 0.114));
+      // Grain is stronger in the shadows, like a sensor pushed too far.
+      col += (rand(uv * 900.0 + fract(time * 7.0)) - 0.5) * mix(0.05, 0.02, clamp(lum, 0.0, 1.0));
+      col *= 0.97 + 0.03 * sin(uv.y * 900.0 + time * 12.0);
+      col *= 1.0 - d * 1.5;
       col = mix(col, vec3(col.r * 1.3, col.g * 0.4, col.b * 0.4), redden);
       gl_FragColor = vec4(col, 1.0);
     }`,
 };
+
+type Surf = 'FLOOR' | 'WALL' | 'CEIL' | 'TRIM';
+
+/**
+ * Standard material patched with per-instance light level (aBright: ambient
+ * only reaches lit circuits), contact shadows where floor meets wall (aWalls),
+ * and world-space grime so no two stretches of wall look the same.
+ */
+function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime: THREE.Texture) {
+  const m = new THREE.MeshStandardMaterial(params);
+  const half = (CFG.CS / 2).toFixed(3), H = CFG.WALL_H.toFixed(3);
+  m.defines = { [`SURF_${kind}`]: '' };
+  m.onBeforeCompile = (sh) => {
+    sh.uniforms.uGrime = { value: grime };
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', `#include <common>
+        attribute float aBright;
+        attribute float aWalls;
+        varying float hBright;
+        varying float hWalls;
+        varying vec3 hW;
+        varying vec3 hL;`)
+      .replace('#include <project_vertex>', `#include <project_vertex>
+        hBright = aBright;
+        hWalls = aWalls;
+        hL = transformed;
+        vec4 hw4 = vec4(transformed, 1.0);
+        #ifdef USE_INSTANCING
+          hw4 = instanceMatrix * hw4;
+        #endif
+        hW = (modelMatrix * hw4).xyz;`);
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', `#include <common>
+        uniform sampler2D uGrime;
+        varying float hBright;
+        varying float hWalls;
+        varying vec3 hW;
+        varying vec3 hL;
+        float hEdge(float d) { return mix(0.42, 1.0, smoothstep(0.0, 0.75, d)); }
+        float hAO() {
+          int m = int(hWalls + 0.5);
+          float ao = 1.0;
+          if ((m & 1) != 0) ao *= hEdge(hL.z + ${half});
+          if ((m & 2) != 0) ao *= hEdge(${half} - hL.x);
+          if ((m & 4) != 0) ao *= hEdge(${half} - hL.z);
+          if ((m & 8) != 0) ao *= hEdge(hL.x + ${half});
+          return ao;
+        }
+        float hWet = 0.0;`)
+      .replace('#include <map_fragment>', `#include <map_fragment>
+        #ifdef SURF_FLOOR
+          float n1 = texture2D(uGrime, hW.xz * 0.03).r;
+          float n2 = texture2D(uGrime, hW.xz * 0.19).g;
+          hWet = smoothstep(0.58, 0.68, n1 * 0.75 + n2 * 0.25);
+          diffuseColor.rgb *= (0.8 + 0.4 * n2) * mix(1.0, 0.45, hWet);
+          diffuseColor.rgb *= hAO();
+        #endif
+        #ifdef SURF_WALL
+          float along = hW.x + hW.z;
+          float st = texture2D(uGrime, vec2(along * 0.06, hW.y * 0.08)).r;
+          float streak = texture2D(uGrime, vec2(along * 0.35, 0.5)).b;
+          float wy = hL.y + ${H} * 0.5;
+          float low = 1.0 - smoothstep(0.0, 1.3, wy);
+          float damp = smoothstep(0.52, 0.8, st) * (0.35 + 0.65 * low);
+          float drip = smoothstep(0.68, 0.92, streak) * smoothstep(0.3, 2.4, wy) * 0.45;
+          float mottle = texture2D(uGrime, vec2(along * 0.4, hW.y * 0.4)).g;
+          diffuseColor.rgb *= 0.9 + 0.2 * mottle;
+          diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.55, 0.44, 0.26), clamp(damp * 0.85 + drip, 0.0, 1.0));
+          diffuseColor.rgb *= mix(0.5, 1.0, smoothstep(0.0, 0.5, wy)) * mix(0.7, 1.0, smoothstep(0.0, 0.4, ${H} - wy));
+        #endif
+        #ifdef SURF_CEIL
+          vec2 tile = floor(hW.xz / 0.75);
+          float hsh = fract(sin(dot(tile, vec2(12.9898, 78.233))) * 43758.5453);
+          float ring = texture2D(uGrime, hW.xz * 0.11).r;
+          diffuseColor.rgb *= mix(1.0, 0.9, step(0.65, hsh));
+          float stain = step(0.88, hsh) * smoothstep(0.4, 0.62, ring);
+          diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.68, 0.55, 0.32), stain);
+          diffuseColor.rgb *= mix(0.55, 1.0, hAO());
+        #endif
+        #ifdef SURF_TRIM
+          diffuseColor.rgb *= 0.8 + 0.2 * texture2D(uGrime, vec2((hW.x + hW.z) * 0.3, 0.2)).g;
+        #endif`)
+      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+        roughnessFactor = mix(roughnessFactor, 0.28, hWet);`)
+      .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
+        reflectedLight.indirectDiffuse *= hBright;
+        reflectedLight.indirectSpecular *= hBright;`);
+  };
+  m.customProgramCacheKey = () => `surf-${kind}`;
+  return m;
+}
+
+function instanced(geo: THREE.BufferGeometry, mat: THREE.Material, n: number) {
+  geo.setAttribute('aBright', new THREE.InstancedBufferAttribute(new Float32Array(n).fill(1), 1));
+  geo.setAttribute('aWalls', new THREE.InstancedBufferAttribute(new Float32Array(n), 1));
+  const mesh = new THREE.InstancedMesh(geo, mat, n);
+  mesh.frustumCulled = false;
+  return mesh;
+}
 
 export class World3D {
   renderer: THREE.WebGLRenderer;
@@ -57,6 +161,8 @@ export class World3D {
   private composer: EffectComposer;
   private hunt: ShaderPass;
   private walls: THREE.InstancedMesh;
+  private trim: THREE.InstancedMesh;
+  private outlets: THREE.InstancedMesh;
   private wallKeys: number[] = [];
   private floor: THREE.InstancedMesh;
   private ceil: THREE.InstancedMesh;
@@ -64,50 +170,61 @@ export class World3D {
   private panelCells: number[] = [];
   private pillars: THREE.InstancedMesh;
   private pillarCells: number[] = [];
+  private pool: THREE.PointLight[] = [];
+  private darkvision: THREE.PointLight;
+  private dust: THREE.Points;
+  private dustMat: THREE.PointsMaterial;
   private chalkGroup = new THREE.Group();
-  private chalkMeshes = new Map<number, THREE.Group>();
-  private chalkGeo = new THREE.PlaneGeometry(1.1, 1.1);
-  private chalkMat: THREE.MeshBasicMaterial;
-  private people = new Map<number, { g: THREE.Group; body: THREE.Mesh; mat: THREE.MeshLambertMaterial }>();
+  private chalkMeshes = new Map<number, THREE.Mesh>();
+  private chalkGeo = new THREE.PlaneGeometry(1.0, 1.0).rotateX(-Math.PI / 2);
+  private chalkTex: THREE.Texture;
+  private people = new Map<number, Person>();
   private builtVersion = -1;
   private cellBright: Float32Array;
   private flicker: Float32Array;
   private tmp = new THREE.Object3D();
   private col = new THREE.Color();
+  private lastT = 0;
 
   constructor(private game: Game, canvas: HTMLCanvasElement) {
     const L = game.level;
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 0.95;
 
-    this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.05, 70);
+    this.camera = new THREE.PerspectiveCamera(72, window.innerWidth / window.innerHeight, 0.05, 80);
     this.camera.rotation.order = 'YXZ';
     this.scene.add(this.camera);
-    this.scene.fog = new THREE.FogExp2(FOG_LIT.getHex(), 0.055);
+    this.scene.fog = new THREE.FogExp2(FOG_LIT.getHex(), 0.042);
     this.scene.background = FOG_LIT.clone();
 
-    this.scene.add(new THREE.HemisphereLight(0xfff3c8, 0x5a4b22, 1.6));
-    const dir = new THREE.DirectionalLight(0xfff0c0, 0.7);
-    dir.position.set(0.6, 1, 0.3);
-    this.scene.add(dir);
+    // Ambient bounce off yellow walls and carpet. Gated per surface by circuit.
+    this.scene.add(new THREE.HemisphereLight(0xffeab0, 0x9a8048, 0.6));
 
     const CS = L.CS, H = CFG.WALL_H;
+    const grime = T.grime();
+    const paper = T.wallpaper(), carpet = T.carpet(), tiles = T.ceiling();
 
-    // Walls: one instanced box per wall edge.
-    const wallTex = T.wallpaper();
-    const wallMat = new THREE.MeshLambertMaterial({ map: wallTex });
-    this.walls = new THREE.InstancedMesh(new THREE.BoxGeometry(CS + 0.16, H, 0.16), wallMat, L.edgeCount);
-    this.walls.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(L.edgeCount * 3).fill(1), 3);
-    this.scene.add(this.walls);
+    // Walls: one instanced box per wall edge, with a baseboard and the odd outlet.
+    const wallMat = surface('WALL', { map: paper.map, normalMap: paper.normal, normalScale: new THREE.Vector2(0.3, 0.3), roughness: 0.82 }, grime);
+    this.walls = instanced(new THREE.BoxGeometry(CS + 0.16, H, 0.16), wallMat, L.edgeCount);
+    const trimMat = surface('TRIM', { color: 0x8d7650, roughness: 0.55 }, grime);
+    this.trim = instanced(new THREE.BoxGeometry(CS + 0.2, 0.12, 0.2), trimMat, L.edgeCount);
+    this.outlets = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(0.075, 0.115, 0.012),
+      new THREE.MeshStandardMaterial({ map: T.outlet(), roughness: 0.4 }),
+      L.edgeCount,
+    );
+    this.outlets.frustumCulled = false;
+    this.scene.add(this.walls, this.trim, this.outlets);
 
     // Floor and ceiling tiles per cell.
-    const floorGeo = new THREE.PlaneGeometry(CS, CS);
-    floorGeo.rotateX(-Math.PI / 2);
-    this.floor = new THREE.InstancedMesh(floorGeo, new THREE.MeshLambertMaterial({ map: T.carpet() }), L.cells);
-    const ceilGeo = new THREE.PlaneGeometry(CS, CS);
-    ceilGeo.rotateX(Math.PI / 2);
-    this.ceil = new THREE.InstancedMesh(ceilGeo, new THREE.MeshBasicMaterial({ map: T.ceiling(), color: 0x9a9070 }), L.cells);
+    const floorMat = surface('FLOOR', { map: carpet.map, normalMap: carpet.normal, normalScale: new THREE.Vector2(0.7, 0.7), roughness: 0.95 }, grime);
+    this.floor = instanced(new THREE.PlaneGeometry(CS, CS).rotateX(-Math.PI / 2), floorMat, L.cells);
+    const ceilMat = surface('CEIL', { map: tiles.map, normalMap: tiles.normal, normalScale: new THREE.Vector2(0.25, 0.25), roughness: 0.9 }, grime);
+    this.ceil = instanced(new THREE.PlaneGeometry(CS, CS).rotateX(Math.PI / 2), ceilMat, L.cells);
     for (let c = 0; c < L.cells; c++) {
       const p = L.center(c);
       this.tmp.position.set(p.x, 0, p.z);
@@ -117,58 +234,91 @@ export class World3D {
       this.tmp.position.y = H;
       this.tmp.updateMatrix();
       this.ceil.setMatrixAt(c, this.tmp.matrix);
-      this.floor.setColorAt(c, LIT);
-      this.ceil.setColorAt(c, LIT);
     }
     this.scene.add(this.floor, this.ceil);
 
-    // Fluorescent panels.
+    // Fluorescent troffers, glowing enough to bloom.
     for (let c = 0; c < L.cells; c++) if (L.panel[c]) this.panelCells.push(c);
-    const panelGeo = new THREE.PlaneGeometry(1.3, 0.6);
-    panelGeo.rotateX(Math.PI / 2);
-    this.panels = new THREE.InstancedMesh(panelGeo, new THREE.MeshBasicMaterial({ toneMapped: false }), this.panelCells.length);
+    this.panels = new THREE.InstancedMesh(new THREE.BoxGeometry(1.2, 0.04, 0.6), new THREE.MeshBasicMaterial({ map: T.panel() }), this.panelCells.length);
+    this.panels.frustumCulled = false;
     this.panelCells.forEach((c, i) => {
       const p = L.center(c);
-      this.tmp.position.set(p.x, H - 0.01, p.z);
-      this.tmp.rotation.set(0, (c % 3) === 0 ? Math.PI / 2 : 0, 0);
+      this.tmp.position.set(p.x, H - 0.015, p.z);
+      this.tmp.rotation.set(0, (c * 7) % 3 === 0 ? Math.PI / 2 : 0, 0);
       this.tmp.updateMatrix();
       this.panels.setMatrixAt(i, this.tmp.matrix);
       this.panels.setColorAt(i, PANEL_ON);
     });
     this.scene.add(this.panels);
+    for (let i = 0; i < POOL; i++) {
+      const l = new THREE.PointLight(0xfff0cc, 0, 11, 2);
+      this.pool.push(l);
+      this.scene.add(l);
+    }
+
+    // Ceiling details: air vents and the odd missing tile.
+    const vents: number[] = [], holes: number[] = [];
+    for (let c = 0; c < L.cells; c++) {
+      if (L.panel[c]) continue;
+      const h = hashString(`ceil${c}`) % 100;
+      if (h < 7) vents.push(c);
+      else if (h < 11) holes.push(c);
+    }
+    const ventMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(0.6, 0.02, 0.6), new THREE.MeshStandardMaterial({ map: T.vent(), roughness: 0.6, metalness: 0.3 }), Math.max(1, vents.length));
+    ventMesh.count = vents.length;
+    const holeMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(0.72, 0.01, 0.72), new THREE.MeshBasicMaterial({ color: 0x050403 }), Math.max(1, holes.length));
+    holeMesh.count = holes.length;
+    vents.forEach((c, i) => {
+      const p = L.center(c);
+      this.tmp.position.set(p.x + 0.375, H - 0.012, p.z - 0.375);
+      this.tmp.rotation.set(0, 0, 0);
+      this.tmp.updateMatrix();
+      ventMesh.setMatrixAt(i, this.tmp.matrix);
+    });
+    holes.forEach((c, i) => {
+      const p = L.center(c);
+      const ox = ((hashString(`hx${c}`) % 4) - 1.5) * 0.75, oz = ((hashString(`hz${c}`) % 4) - 1.5) * 0.75;
+      this.tmp.position.set(p.x + ox, H - 0.006, p.z + oz);
+      this.tmp.rotation.set(0, 0, 0);
+      this.tmp.updateMatrix();
+      holeMesh.setMatrixAt(i, this.tmp.matrix);
+    });
+    ventMesh.frustumCulled = holeMesh.frustumCulled = false;
+    this.scene.add(ventMesh, holeMesh);
 
     // Pillars.
-    this.pillars = new THREE.InstancedMesh(new THREE.BoxGeometry(0.6, H, 0.6), wallMat, Math.max(1, L.pillars.length));
+    this.pillars = instanced(new THREE.BoxGeometry(0.6, H, 0.6), wallMat, Math.max(1, L.pillars.length));
     this.pillars.count = L.pillars.length;
     L.pillars.forEach((p, i) => {
       this.tmp.position.set(p.x, H / 2, p.z);
       this.tmp.rotation.set(0, 0, 0);
       this.tmp.updateMatrix();
       this.pillars.setMatrixAt(i, this.tmp.matrix);
-      this.pillars.setColorAt(i, LIT);
       this.pillarCells.push(L.cellAt(p.x - 0.1, p.z - 0.1));
     });
     this.scene.add(this.pillars);
 
-    // Exits: a door painted on the border wall, with a glowing sign.
-    const signTex = T.exitSign();
-    for (const e of L.exits) {
-      const p = L.center(e.cell);
-      const g = new THREE.Group();
-      const door = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 2.1), new THREE.MeshLambertMaterial({ color: 0x4a3524 }));
-      door.position.set(0, 1.05, 0);
-      const sign = new THREE.Mesh(new THREE.PlaneGeometry(0.75, 0.28), new THREE.MeshBasicMaterial({ map: signTex, toneMapped: false, fog: false }));
-      sign.position.set(0, 2.35, 0);
-      g.add(door, sign);
-      // Place the group against the wall on side e.dir, facing into the cell.
-      const off = CS / 2 - 0.1;
-      const dx = [0, 1, 0, -1][e.dir], dz = [-1, 0, 1, 0][e.dir];
-      g.position.set(p.x + dx * off, 0, p.z + dz * off);
-      g.rotation.y = Math.atan2(-dx, -dz);
-      this.scene.add(g);
-    }
+    this.buildExits();
 
-    this.chalkMat = new THREE.MeshBasicMaterial({ map: T.chalkArrow(), transparent: true, depthWrite: false });
+    // The monster sees a little in the dark: a cold, faint light that follows its eyes.
+    this.darkvision = new THREE.PointLight(0x6f86c0, 0, 8, 1.6);
+    this.camera.add(this.darkvision);
+
+    // Dust hanging in the air.
+    const n = 700;
+    const pos = new Float32Array(n * 3);
+    for (let i = 0; i < n * 3; i++) pos[i] = Math.random() * 16 - 8;
+    const dustGeo = new THREE.BufferGeometry();
+    dustGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    this.dustMat = new THREE.PointsMaterial({
+      size: 0.018, map: T.dustSprite(), transparent: true, opacity: 0.5,
+      depthWrite: false, blending: THREE.AdditiveBlending, color: 0xfff0c8,
+    });
+    this.dust = new THREE.Points(dustGeo, this.dustMat);
+    this.dust.frustumCulled = false;
+    this.scene.add(this.dust);
+
+    this.chalkTex = T.chalkArrow();
     this.scene.add(this.chalkGroup);
 
     this.cellBright = new Float32Array(L.cells).fill(1);
@@ -176,11 +326,45 @@ export class World3D {
 
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
+    this.composer.addPass(new UnrealBloomPass(new THREE.Vector2(window.innerWidth / 2, window.innerHeight / 2), 0.4, 0.5, 1.4));
     this.hunt = new ShaderPass(HuntShader);
     this.composer.addPass(this.hunt);
     this.composer.addPass(new OutputPass());
 
     this.rebuildWalls();
+  }
+
+  private buildExits() {
+    const L = this.game.level;
+    const doorMat = new THREE.MeshStandardMaterial({ color: 0x6b6458, roughness: 0.45, metalness: 0.55 });
+    const frameMat = new THREE.MeshStandardMaterial({ color: 0x3d3a34, roughness: 0.5, metalness: 0.6 });
+    const barMat = new THREE.MeshStandardMaterial({ color: 0xb0b0aa, roughness: 0.25, metalness: 0.9 });
+    const signMat = new THREE.MeshBasicMaterial({ map: T.exitSign(), color: new THREE.Color(2.2, 2.2, 2.2) });
+    for (const e of L.exits) {
+      const p = L.center(e.cell);
+      const g = new THREE.Group();
+      const add = (geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number) => {
+        const m = new THREE.Mesh(geo, mat);
+        m.position.set(x, y, z);
+        g.add(m);
+      };
+      add(new THREE.BoxGeometry(1.0, 2.1, 0.05), doorMat, 0, 1.05, 0.02);
+      add(new THREE.BoxGeometry(0.08, 2.2, 0.1), frameMat, -0.54, 1.1, 0.03);
+      add(new THREE.BoxGeometry(0.08, 2.2, 0.1), frameMat, 0.54, 1.1, 0.03);
+      add(new THREE.BoxGeometry(1.16, 0.08, 0.1), frameMat, 0, 2.18, 0.03);
+      add(new THREE.BoxGeometry(0.8, 0.05, 0.06), barMat, 0, 1.0, 0.08);
+      add(new THREE.BoxGeometry(0.05, 0.4, 0.04), barMat, 0.4, 1.3, 0.06);
+      add(new THREE.BoxGeometry(0.62, 0.24, 0.06), signMat, 0, 2.42, 0.04);
+      const glow = new THREE.PointLight(0x4dff6e, 2.2, 5, 2);
+      glow.position.set(0, 2.3, 0.4);
+      g.add(glow);
+      // Against the wall on side e.dir, facing into the cell.
+      const off = L.CS / 2 - 0.1;
+      const dx = [0, 1, 0, -1][e.dir], dz = [-1, 0, 1, 0][e.dir];
+      g.position.set(p.x + dx * off, 0, p.z + dz * off);
+      g.rotation.y = Math.atan2(-dx, -dz);
+      this.scene.add(g);
+    }
   }
 
   resize() {
@@ -193,21 +377,53 @@ export class World3D {
   private rebuildWalls() {
     const L = this.game.level;
     this.wallKeys = [];
+    let outlets = 0;
     for (let k = 0; k < L.edgeCount; k++) {
       if (!L.isWall(k)) continue;
       const s = L.edgeSegment(k);
-      this.tmp.position.set((s.x1 + s.x2) / 2, CFG.WALL_H / 2, (s.z1 + s.z2) / 2);
-      this.tmp.rotation.set(0, s.horizontal ? 0 : Math.PI / 2, 0);
+      const mx = (s.x1 + s.x2) / 2, mz = (s.z1 + s.z2) / 2;
+      const ry = s.horizontal ? 0 : Math.PI / 2;
+      const i = this.wallKeys.length;
+      this.tmp.rotation.set(0, ry, 0);
+      this.tmp.position.set(mx, CFG.WALL_H / 2, mz);
       this.tmp.updateMatrix();
-      this.walls.setMatrixAt(this.wallKeys.length, this.tmp.matrix);
+      this.walls.setMatrixAt(i, this.tmp.matrix);
+      this.tmp.position.set(mx, 0.06, mz);
+      this.tmp.updateMatrix();
+      this.trim.setMatrixAt(i, this.tmp.matrix);
       this.wallKeys.push(k);
+      // An outlet on roughly one wall face in ten, chosen by edge so it never moves.
+      const h = hashString(`out${k}`);
+      if (h % 10 === 0) {
+        const side = (h >> 4) % 2 ? 1 : -1;
+        const [a, b] = L.edgeCells(k);
+        if ((side > 0 ? b : a) >= 0) {
+          const nx = s.horizontal ? 0 : side * 0.085, nz = s.horizontal ? side * 0.085 : 0;
+          const along = (((h >> 8) % 100) / 100 - 0.5) * 1.8;
+          this.tmp.position.set(mx + nx + (s.horizontal ? along : 0), 0.38, mz + nz + (s.horizontal ? 0 : along));
+          this.tmp.rotation.set(0, ry + (side < 0 ? Math.PI : 0), 0);
+          this.tmp.updateMatrix();
+          this.outlets.setMatrixAt(outlets++, this.tmp.matrix);
+        }
+      }
     }
-    this.walls.count = this.wallKeys.length;
-    this.walls.instanceMatrix.needsUpdate = true;
+    this.walls.count = this.trim.count = this.wallKeys.length;
+    this.outlets.count = outlets;
+    for (const m of [this.walls, this.trim, this.outlets]) m.instanceMatrix.needsUpdate = true;
+
+    // Contact shadows: each floor/ceiling tile knows which of its sides are walled.
+    const fw = this.floor.geometry.getAttribute('aWalls') as THREE.InstancedBufferAttribute;
+    const cw = this.ceil.geometry.getAttribute('aWalls') as THREE.InstancedBufferAttribute;
+    for (let c = 0; c < L.cells; c++) {
+      const m = L.mask(c) ^ 15;
+      fw.setX(c, m);
+      cw.setX(c, m);
+    }
+    fw.needsUpdate = cw.needsUpdate = true;
     this.builtVersion = L.version;
   }
 
-  /** Smoothly flickering brightness per circuit, from the game's blackout timers. */
+  /** Flickering brightness per circuit, from the game's blackout timers. */
   circuitLevel(i: number, t: number): number {
     const b = this.game.blackout[i];
     if (b <= 0) return 1;
@@ -220,41 +436,39 @@ export class World3D {
   update(t: number, redden: number) {
     const g = this.game;
     const L = g.level;
+    const dt = Math.min(0.1, Math.max(0, t - this.lastT));
+    this.lastT = t;
     if (L.version !== this.builtVersion) this.rebuildWalls();
 
     const circ = new Float32Array(L.circuitCount);
     for (let i = 0; i < circ.length; i++) circ[i] = this.circuitLevel(i, t);
+    const setB = (mesh: THREE.InstancedMesh, i: number, v: number) =>
+      (mesh.geometry.getAttribute('aBright') as THREE.InstancedBufferAttribute).setX(i, v);
     for (let c = 0; c < L.cells; c++) {
-      const target = circ[L.circuit[c]];
-      this.cellBright[c] += (target - this.cellBright[c]) * 0.35;
-      this.col.copy(DARK).lerp(LIT, this.cellBright[c]);
-      this.floor.setColorAt(c, this.col);
-      this.ceil.setColorAt(c, this.col);
+      this.cellBright[c] += (circ[L.circuit[c]] - this.cellBright[c]) * 0.35;
+      setB(this.floor, c, this.cellBright[c]);
+      setB(this.ceil, c, this.cellBright[c]);
     }
     this.wallKeys.forEach((k, i) => {
       const [a, b] = L.edgeCells(k);
       const v = Math.max(a >= 0 ? this.cellBright[a] : 0, b >= 0 ? this.cellBright[b] : 0);
-      this.col.copy(DARK).lerp(LIT, v);
-      this.walls.setColorAt(i, this.col);
+      setB(this.walls, i, v);
+      setB(this.trim, i, v);
     });
-    this.pillarCells.forEach((c, i) => {
-      this.col.copy(DARK).lerp(LIT, this.cellBright[c]);
-      this.pillars.setColorAt(i, this.col);
-    });
-    // Panels: on with their circuit, plus the odd tired flicker.
-    this.panelCells.forEach((c, i) => {
-      if (Math.random() < 0.0015) this.flicker[i] = 0;
-      this.flicker[i] = Math.min(1, this.flicker[i] + 0.08);
-      const v = this.cellBright[c] * (this.flicker[i] > 0.5 ? 1 : 0.25);
-      this.col.copy(PANEL_OFF).lerp(PANEL_ON, v);
-      this.panels.setColorAt(i, this.col);
-    });
-    for (const m of [this.floor, this.ceil, this.walls, this.pillars, this.panels]) {
-      if (m.instanceColor) m.instanceColor.needsUpdate = true;
+    this.pillarCells.forEach((c, i) => setB(this.pillars, i, this.cellBright[c]));
+    for (const m of [this.floor, this.ceil, this.walls, this.trim, this.pillars]) {
+      m.geometry.getAttribute('aBright').needsUpdate = true;
     }
 
-    this.syncChalk();
-    this.syncPeople(t);
+    // Panels: on with their circuit, plus the odd tired flicker.
+    this.panelCells.forEach((c, i) => {
+      if (Math.random() < 0.0012) this.flicker[i] = -1.5;
+      this.flicker[i] = Math.min(1, this.flicker[i] + 0.06);
+      const fl = this.flicker[i] > 0 ? 1 : Math.random() < 0.5 ? 0.15 : 1;
+      this.col.copy(PANEL_OFF).lerp(PANEL_ON, this.cellBright[c] * fl);
+      this.panels.setColorAt(i, this.col);
+    });
+    if (this.panels.instanceColor) this.panels.instanceColor.needsUpdate = true;
 
     // Camera = the monster's eyes.
     const m = g.monster;
@@ -262,14 +476,72 @@ export class World3D {
     this.camera.position.set(m.x, CFG.EYE_HEIGHT + sway, m.z);
     this.camera.rotation.set(m.pitch, m.yaw, 0);
 
+    this.placeLights(m.x, m.z);
+
     const here = this.cellBright[L.cellAt(m.x, m.z)];
+    this.darkvision.intensity = 2.8 * (1 - here) + 0.15;
     const fog = this.scene.fog as THREE.FogExp2;
     fog.color.copy(FOG_DARK).lerp(FOG_LIT, here);
+    fog.density = 0.042 + (1 - here) * 0.03;
     (this.scene.background as THREE.Color).copy(fog.color);
+
+    // Dust drifts and wraps around the camera.
+    const dp = this.dust.geometry.getAttribute('position') as THREE.BufferAttribute;
+    const arr = dp.array as Float32Array;
+    for (let i = 0; i < arr.length; i += 3) {
+      arr[i] += Math.sin(t * 0.3 + i) * 0.04 * dt;
+      arr[i + 1] -= 0.02 * dt;
+      arr[i + 2] += Math.cos(t * 0.27 + i) * 0.04 * dt;
+      for (let a = 0; a < 3; a++) {
+        const center = a === 0 ? m.x : a === 1 ? CFG.WALL_H / 2 : m.z;
+        const half = a === 1 ? CFG.WALL_H / 2 : 6;
+        let v = arr[i + a];
+        if (v < center - half) v += half * 2;
+        else if (v > center + half) v -= half * 2;
+        arr[i + a] = v;
+      }
+    }
+    dp.needsUpdate = true;
+    this.dustMat.opacity = 0.45 * here + 0.05;
+
+    this.syncChalk();
+    this.syncPeople(dt, t);
 
     this.hunt.uniforms.time.value = t;
     this.hunt.uniforms.redden.value = redden;
     this.hunt.uniforms.seep.value = m.seepT > 0 ? 1 : 0;
+  }
+
+  /** Move the light pool to the nearest lit fixtures the camera can see. */
+  private placeLights(cx: number, cz: number) {
+    const L = this.game.level;
+    const cand: { i: number; d: number }[] = [];
+    this.panelCells.forEach((c, i) => {
+      if (this.cellBright[c] < 0.05) return;
+      const p = L.center(c);
+      const d = Math.hypot(p.x - cx, p.z - cz);
+      if (d < POOL_REACH) cand.push({ i, d });
+    });
+    cand.sort((a, b) => a.d - b.d);
+    const chosen: { i: number; d: number }[] = [];
+    let cutoff = POOL_REACH;
+    for (const k of cand) {
+      const p = L.center(this.panelCells[k.i]);
+      if (k.d > L.CS * 1.2 && !L.los(cx, cz, p.x, p.z)) continue;
+      if (chosen.length === POOL) { cutoff = k.d; break; }
+      chosen.push(k);
+    }
+    this.pool.forEach((light, j) => {
+      const k = chosen[j];
+      if (!k) { light.intensity = 0; return; }
+      const c = this.panelCells[k.i];
+      const p = L.center(c);
+      light.position.set(p.x, CFG.WALL_H - 0.25, p.z);
+      const fl = this.flicker[k.i] > 0 ? 1 : 0.2;
+      // Fade out as a fixture nears the cut-off, so lights hand over without popping.
+      const fade = Math.min(1, Math.max(0, (cutoff - k.d) / 2.5));
+      light.intensity = 5 * this.cellBright[c] * fl * fade;
+    });
   }
 
   render() {
@@ -283,60 +555,39 @@ export class World3D {
 
   private syncChalk() {
     const g = this.game;
-    for (const [cell, grp] of this.chalkMeshes) {
-      if (!g.chalk.has(cell)) { this.chalkGroup.remove(grp); this.chalkMeshes.delete(cell); }
+    for (const [cell, mesh] of this.chalkMeshes) {
+      if (!g.chalk.has(cell)) { this.chalkGroup.remove(mesh); this.chalkMeshes.delete(cell); }
     }
     for (const [cell, mark] of g.chalk) {
-      let grp = this.chalkMeshes.get(cell);
-      if (!grp) {
-        grp = new THREE.Group();
-        const mesh = new THREE.Mesh(this.chalkGeo, this.chalkMat);
-        mesh.rotation.x = -Math.PI / 2;
-        grp.add(mesh);
+      let mesh = this.chalkMeshes.get(cell);
+      if (!mesh) {
+        mesh = new THREE.Mesh(this.chalkGeo, new THREE.MeshStandardMaterial({
+          map: this.chalkTex, transparent: true, depthWrite: false, roughness: 1, polygonOffset: true, polygonOffsetFactor: -2,
+        }));
         const p = g.level.center(cell);
-        grp.position.set(p.x, 0.02, p.z);
-        this.chalkGroup.add(grp);
-        this.chalkMeshes.set(cell, grp);
+        mesh.position.set(p.x, 0.015, p.z);
+        this.chalkGroup.add(mesh);
+        this.chalkMeshes.set(cell, mesh);
       }
-      grp.rotation.y = -mark.dir * Math.PI / 2;
+      mesh.rotation.y = -mark.dir * Math.PI / 2;
+      (mesh.material as THREE.MeshStandardMaterial).color.setScalar(0.2 + 0.8 * this.cellBright[cell]);
     }
   }
 
-  private syncPeople(t: number) {
+  private syncPeople(dt: number, t: number) {
     const g = this.game;
     for (const w of g.wanderers) {
       let p = this.people.get(w.id);
       if (!w.active) {
-        if (p) { this.scene.remove(p.g); this.people.delete(w.id); }
+        if (p) { p.removeFrom(this.scene); this.people.delete(w.id); }
         continue;
       }
-      if (!p) p = this.makePerson(w);
-      const crouch = w.state === 'hide' ? 0.62 : 1;
-      p.g.position.set(w.x, Math.abs(Math.sin(w.walkPhase)) * 0.05, w.z);
-      p.g.scale.y += (crouch - p.g.scale.y) * 0.2;
-      p.g.rotation.y = -w.heading + Math.PI / 2;
-      // Trembling when terrified.
-      p.body.rotation.z = w.fear > 70 ? Math.sin(t * 40 + w.id) * 0.03 : 0;
-      const b = this.cellBright[w.cell] ?? 1;
-      p.mat.color.setScalar(0.02 + 0.05 * b);
+      if (!p) {
+        p = new Person(w);
+        p.addTo(this.scene);
+        this.people.set(w.id, p);
+      }
+      p.update(w, dt, t, this.cellBright[w.cell] ?? 1);
     }
-  }
-
-  private makePerson(w: Wanderer) {
-    const mat = new THREE.MeshLambertMaterial({ color: 0x2a2a2a });
-    const g = new THREE.Group();
-    const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.22, 0.95, 4, 8), mat);
-    body.position.y = 0.95;
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.15, 10, 8), mat);
-    head.position.y = 1.62;
-    g.add(body, head);
-    this.scene.add(g);
-    const p = { g, body, mat };
-    this.people.set(w.id, p);
-    return p;
-  }
-
-  isPersonVisible(w: Wanderer) {
-    return this.people.has(w.id);
   }
 }
