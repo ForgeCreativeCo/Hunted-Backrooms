@@ -1,38 +1,24 @@
 import { CFG } from './config';
 import { Net } from './net/client';
-import type { LobbyPlayer, ServerMsg } from './net/protocol';
+import type { LobbyPlayer, RoomInfo, ServerMsg } from './net/protocol';
 
 const $ = (id: string) => document.getElementById(id)!;
 
 export type StartMsg = Extract<ServerMsg, { t: 'start' }>;
 
-/** The multiplayer menu and lobby screens. Calls onStart when the host launches the night. */
+/** The multiplayer room list and waiting room. Calls onStart when the host launches the night. */
 export class Lobby {
   net = new Net();
   private you = '';
   private players: LobbyPlayer[] = [];
+  private rooms: RoomInfo[] = [];
   private inLobby = false;
 
   constructor(private onStart: (msg: StartMsg) => void, private onBack: () => void) {
     const name = $('mpname') as HTMLInputElement;
     try { name.value = localStorage.getItem('hum-name') ?? ''; } catch { /* storage blocked */ }
-    const saveName = () => {
-      try { localStorage.setItem('hum-name', name.value.trim()); } catch { /* storage blocked */ }
-      return name.value.trim() || 'Player';
-    };
 
-    $('create').addEventListener('click', async () => {
-      if (await this.ensureConnected()) this.net.send({ t: 'create', name: saveName() });
-    });
-    const join = async () => {
-      const code = ($('joincode') as HTMLInputElement).value.trim().toUpperCase();
-      if (code.length !== 4) return this.status('Enter the 4-letter lobby code');
-      if (await this.ensureConnected()) this.net.send({ t: 'join', code, name: saveName() });
-    };
-    $('join').addEventListener('click', join);
-    $('joincode').addEventListener('keydown', (e) => { if ((e as KeyboardEvent).key === 'Enter') join(); });
     $('mpback').addEventListener('click', () => { $('mp').hidden = true; this.onBack(); });
-
     $('be-monster').addEventListener('click', () => this.net.send({ t: 'role', role: 'monster' }));
     $('be-human').addEventListener('click', () => this.net.send({ t: 'role', role: 'human' }));
     $('ready').addEventListener('click', () => this.net.send({ t: 'ready', ready: !this.me()?.ready }));
@@ -48,38 +34,46 @@ export class Lobby {
     this.net.onClose = () => this.lost();
   }
 
-  /** The connection dropped: forget the lobby, and go back to the menu if it was on screen. */
-  lost() {
-    const showing = !$('lobby').hidden;
-    this.inLobby = false;
-    $('lobby').hidden = true;
-    if (showing) this.openMenu();
-    this.status('Lost connection to the game server');
-  }
-
-  openMenu() {
+  /** Show the room list, connecting first if needed. */
+  async openMenu() {
     $('mp').hidden = false;
-    ($('mpname') as HTMLInputElement).focus();
+    this.renderRooms();
+    if (this.net.connected) {
+      this.net.send({ t: 'rooms' });
+      return;
+    }
+    this.status('Connecting…');
+    try {
+      await this.net.connect(); // the server sends the room list on connect
+      this.status('');
+    } catch {
+      this.status('Could not reach the game server. Is it running? (npm run dev)');
+    }
   }
 
-  /** Back to the lobby screen after a night ends. */
+  /** Back to the waiting room after a night ends. */
   showLobby() {
     if (!this.inLobby) return this.openMenu();
     $('lobby').hidden = false;
     this.render();
   }
 
-  private async ensureConnected() {
-    if (this.net.connected) return true;
-    this.status('Connecting…');
-    try {
-      await this.net.connect();
-      this.status('');
-      return true;
-    } catch {
-      this.status('Could not reach the game server. Is it running? (npm run dev)');
-      return false;
-    }
+  /** The connection dropped: forget the room, and go back to the menu if it was on screen. */
+  lost() {
+    const showing = !$('lobby').hidden;
+    this.inLobby = false;
+    this.rooms = [];
+    $('lobby').hidden = true;
+    if (showing) $('mp').hidden = false;
+    this.renderRooms();
+    this.status('Lost connection to the game server');
+  }
+
+  private join(room: number) {
+    const input = $('mpname') as HTMLInputElement;
+    const name = input.value.trim() || 'Player';
+    try { localStorage.setItem('hum-name', input.value.trim()); } catch { /* storage blocked */ }
+    this.net.send({ t: 'join', room, name });
   }
 
   private status(msg: string) {
@@ -93,10 +87,14 @@ export class Lobby {
 
   private handle(m: ServerMsg) {
     switch (m.t) {
+      case 'rooms':
+        this.rooms = m.rooms;
+        this.renderRooms();
+        break;
       case 'lobby':
         this.you = m.you;
         this.players = m.players;
-        $('code').textContent = m.code;
+        $('roomname').textContent = m.name;
         if (!this.inLobby) {
           this.inLobby = true;
           this.status('');
@@ -113,6 +111,28 @@ export class Lobby {
         this.status('');
         this.onStart(m);
         break;
+    }
+  }
+
+  private renderRooms() {
+    const list = $('rooms');
+    list.innerHTML = '';
+    for (const r of this.rooms) {
+      const li = document.createElement('li');
+      const name = document.createElement('span');
+      name.className = 'rn';
+      name.textContent = r.name;
+      const state = document.createElement('span');
+      state.className = `rs ${r.playing ? 'live' : ''}`;
+      state.textContent = r.playing
+        ? `night under way · ${r.players}/${r.max}`
+        : r.players === 0 ? 'empty' : `${r.players}/${r.max} waiting${r.monster ? ' · monster taken' : ''}`;
+      const btn = document.createElement('button');
+      btn.textContent = 'Join';
+      btn.disabled = r.playing || r.players >= r.max;
+      btn.addEventListener('click', () => this.join(r.id));
+      li.append(name, state, btn);
+      list.appendChild(li);
     }
   }
 

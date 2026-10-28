@@ -13,9 +13,19 @@ export interface LobbyPlayer {
   host: boolean;
 }
 
+/** One of the fixed rooms, as the room list shows it. */
+export interface RoomInfo {
+  id: number;
+  name: string;
+  players: number;
+  max: number;
+  playing: boolean;
+  monster: boolean;
+}
+
 export type ClientMsg =
-  | { t: 'create'; name: string }
-  | { t: 'join'; code: string; name: string }
+  | { t: 'rooms' }
+  | { t: 'join'; room: number; name: string }
   | { t: 'role'; role: Role }
   | { t: 'ready'; ready: boolean }
   | { t: 'start' }
@@ -28,7 +38,8 @@ export type ClientMsg =
   | { t: 'act'; a: 'catch'; fx: number; fz: number };
 
 export type ServerMsg =
-  | { t: 'lobby'; code: string; you: string; players: LobbyPlayer[] }
+  | { t: 'rooms'; rooms: RoomInfo[] }
+  | { t: 'lobby'; room: number; name: string; you: string; players: LobbyPlayer[] }
   | { t: 'error'; msg: string }
   | { t: 'start'; seed: string; role: Role; slot: number; players: string[] }
   | { t: 'snap'; s: Snapshot; ev: NetEvent[] }

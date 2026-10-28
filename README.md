@@ -14,7 +14,7 @@ npm run dev
 This starts the game server (port 8787) and the client (port 5173) together. Open http://localhost:5173 in a desktop browser.
 
 - **Play solo** is the original prototype. Every solo night has a seed in the URL (`?seed=damp-1234`), so a night can be replayed or shared.
-- **Multiplayer** opens the lobby. One player creates a lobby and shares the 4-letter code; the others join with it. Everyone picks a side and readies up, then the host starts the night.
+- **Multiplayer** lists six rooms, each showing who is waiting or whether a night is under way. Pick one and join; the first player in becomes its host. Everyone picks a side and readies up, then the host starts the night. A room holds 5 players and resets when it empties.
 
 To play with people on other machines, use the production server below: it serves the game and the multiplayer connection from one port, so that's the only one others need to reach.
 
@@ -47,7 +47,7 @@ npm start
 ## Checks
 
 - `npm run sim` runs 20 headless solo nights with an idle monster and prints escape times (add `-- --chase` for a bot that chases). Use it when tuning `src/config.ts`.
-- `npm run net-test` runs bot clients against a running server (start one first with `npm run dev`) and checks the lobby, roles, movement validation, abilities, chalk, flashlight and disconnects.
+- `npm run net-test` runs bot clients against a running server (start one first with `npm run dev`) and checks the rooms, roles, movement validation, abilities, chalk, flashlight and disconnects.
 
 ## Sound
 

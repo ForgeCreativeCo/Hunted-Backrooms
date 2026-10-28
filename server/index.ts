@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { CFG } from '../src/config';
 import { Game } from '../src/game';
-import { ClientMsg, encodeSnapshot, LobbyPlayer, NetEvent, Role, ServerMsg } from '../src/net/protocol';
+import { ClientMsg, encodeSnapshot, LobbyPlayer, NetEvent, Role, RoomInfo, ServerMsg } from '../src/net/protocol';
 import { randomSeed } from '../src/rng';
 
 // --port wins (the dev script uses it, since tools often set PORT for the client); hosts set PORT.
@@ -17,6 +17,7 @@ const PORT = Number(argPort > 0 ? process.argv[argPort + 1] : process.env.PORT) 
 const DIST = join(fileURLToPath(new URL('.', import.meta.url)), '..', 'dist');
 const TICK_HZ = 30;
 const MAX_PLAYERS = 1 + CFG.MAX_HUMANS;
+const ROOM_COUNT = 6;
 
 interface Client {
   id: string;
@@ -30,7 +31,8 @@ interface Client {
 }
 
 interface Room {
-  code: string;
+  id: number;
+  name: string;
   clients: Client[];
   hostId: string;
   game: Game | null;
@@ -40,7 +42,11 @@ interface Room {
   wallsSent: number;
 }
 
-const rooms = new Map<string, Room>();
+// Six permanent rooms. An empty room just resets; it's never removed.
+const rooms: Room[] = Array.from({ length: ROOM_COUNT }, (_, i) => ({
+  id: i + 1, name: `Room ${i + 1}`, clients: [], hostId: '', game: null, events: [], timer: null, lastTick: 0, wallsSent: 0,
+}));
+const clients = new Set<Client>();
 let nextId = 1;
 
 // ---- Static files ----
@@ -78,12 +84,17 @@ function send(c: Client, msg: ServerMsg) {
   if (c.ws.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify(msg));
 }
 
-function newCode() {
-  const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
-  let code = '';
-  do code = Array.from({ length: 4 }, () => A[Math.floor(Math.random() * A.length)]).join('');
-  while (rooms.has(code));
-  return code;
+function roomList(): RoomInfo[] {
+  return rooms.map((r) => ({
+    id: r.id, name: r.name, players: r.clients.length, max: MAX_PLAYERS,
+    playing: !!r.game, monster: r.clients.some((c) => c.role === 'monster'),
+  }));
+}
+
+/** Everyone browsing the menu sees the rooms fill and empty live. */
+function broadcastRooms() {
+  const rooms = roomList();
+  for (const c of clients) if (!c.room) send(c, { t: 'rooms', rooms });
 }
 
 function cleanName(name: unknown, room: Room | null) {
@@ -98,7 +109,8 @@ function sendLobby(room: Room) {
   const players: LobbyPlayer[] = room.clients.map((c) => ({
     id: c.id, name: c.name, role: c.role, ready: c.ready, host: c.id === room.hostId,
   }));
-  for (const c of room.clients) send(c, { t: 'lobby', code: room.code, you: c.id, players });
+  for (const c of room.clients) send(c, { t: 'lobby', room: room.id, name: room.name, you: c.id, players });
+  broadcastRooms();
 }
 
 function leaveRoom(c: Client) {
@@ -115,7 +127,10 @@ function leaveRoom(c: Client) {
   }
   if (!room.clients.length) {
     if (room.timer) clearInterval(room.timer);
-    rooms.delete(room.code);
+    room.timer = null;
+    room.game = null;
+    room.hostId = '';
+    broadcastRooms();
     return;
   }
   if (room.hostId === c.id) room.hostId = room.clients[0].id;
@@ -124,25 +139,18 @@ function leaveRoom(c: Client) {
 
 function lobbyMsg(c: Client, msg: ClientMsg) {
   switch (msg.t) {
-    case 'create': {
-      leaveRoom(c);
-      const room: Room = {
-        code: newCode(), clients: [], hostId: c.id, game: null, events: [], timer: null, lastTick: 0, wallsSent: 0,
-      };
-      rooms.set(room.code, room);
-      c.name = cleanName(msg.name, room);
-      room.clients.push(c);
-      c.room = room;
-      sendLobby(room);
+    case 'rooms':
+      send(c, { t: 'rooms', rooms: roomList() });
       return;
-    }
     case 'join': {
-      const room = rooms.get(String(msg.code ?? '').trim().toUpperCase());
-      if (!room) return send(c, { t: 'error', msg: 'No lobby with that code' });
-      if (room.game) return send(c, { t: 'error', msg: 'That night has already started' });
-      if (room.clients.length >= MAX_PLAYERS) return send(c, { t: 'error', msg: 'That lobby is full' });
+      const room = rooms.find((r) => r.id === Number(msg.room));
+      if (!room) return send(c, { t: 'error', msg: 'No such room' });
+      if (room === c.room) return;
+      if (room.game) return send(c, { t: 'error', msg: `A night is already under way in ${room.name}` });
+      if (room.clients.length >= MAX_PLAYERS) return send(c, { t: 'error', msg: `${room.name} is full` });
       leaveRoom(c);
       c.name = cleanName(msg.name, room);
+      if (!room.clients.length) room.hostId = c.id;
       room.clients.push(c);
       c.room = room;
       sendLobby(room);
@@ -206,7 +214,8 @@ function startGame(room: Room) {
   }
   room.lastTick = performance.now();
   room.timer = setInterval(() => tick(room), 1000 / TICK_HZ);
-  console.log(`[${room.code}] night started: seed ${seed}, ${humans.length} human player(s)`);
+  broadcastRooms();
+  console.log(`[${room.name}] night started: seed ${seed}, ${humans.length} human player(s)`);
 }
 
 function tick(room: Room) {
@@ -239,7 +248,7 @@ function endGame(room: Room, reason?: string) {
     send(c, { t: 'end', result, reason });
   }
   sendLobby(room);
-  console.log(`[${room.code}] night ended: ${result.score}/${result.quota} fear${reason ? ` (${reason})` : ''}`);
+  console.log(`[${room.name}] night ended: ${result.score}/${result.quota} fear${reason ? ` (${reason})` : ''}`);
 }
 
 function gameMsg(c: Client, msg: ClientMsg) {
@@ -310,6 +319,8 @@ function gameMsg(c: Client, msg: ClientMsg) {
 const wss = new WebSocketServer({ server: http, path: '/ws' });
 wss.on('connection', (ws) => {
   const c: Client = { id: String(nextId++), ws, name: 'Player', role: null, ready: false, room: null, slot: -1, lastPosAt: 0 };
+  clients.add(c);
+  send(c, { t: 'rooms', rooms: roomList() });
   ws.on('message', (data) => {
     let msg: ClientMsg;
     try { msg = JSON.parse(String(data)); } catch { return; }
@@ -317,7 +328,10 @@ wss.on('connection', (ws) => {
     if (msg.t === 'pos' || msg.t === 'act') gameMsg(c, msg);
     else lobbyMsg(c, msg);
   });
-  ws.on('close', () => leaveRoom(c));
+  ws.on('close', () => {
+    clients.delete(c);
+    leaveRoom(c);
+  });
 });
 
 http.listen(PORT, () => console.log(`HUM server on http://localhost:${PORT} (websocket at /ws)`));
