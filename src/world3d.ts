@@ -7,7 +7,9 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { CFG } from './config';
 import { Creature } from './creature';
 import { Game } from './game';
+import type { Door } from './level';
 import { Person } from './person';
+import { buildProps, PropMat } from './props';
 import { hashString } from './rng';
 import * as T from './textures';
 
@@ -80,7 +82,13 @@ const HuntShader = {
     }`,
 };
 
-type Surf = 'FLOOR' | 'WALL' | 'CEIL' | 'TRIM';
+type Surf = 'FLOOR' | 'WALL' | 'CEIL' | 'TRIM' | 'PROP';
+
+/**
+ * Light level per cell as a small texture, for meshes that aren't instanced per
+ * cell (merged furniture, doors): they look up how lit their spot is.
+ */
+const cellLight = { tex: { value: null as THREE.Texture | null }, size: { value: new THREE.Vector2(1, 1) } };
 
 /**
  * Standard material patched with per-instance light level (aBright: ambient
@@ -93,6 +101,8 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
   m.defines = { [`SURF_${kind}`]: '' };
   m.onBeforeCompile = (sh) => {
     sh.uniforms.uGrime = { value: grime };
+    sh.uniforms.uCellTex = cellLight.tex;
+    sh.uniforms.uMapSize = cellLight.size;
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', `#include <common>
         attribute float aBright;
@@ -113,6 +123,8 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>
         uniform sampler2D uGrime;
+        uniform sampler2D uCellTex;
+        uniform vec2 uMapSize;
         varying float hBright;
         varying float hWalls;
         varying vec3 hW;
@@ -128,7 +140,16 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
           return ao;
         }
         float hWet = 0.0;`)
-      .replace('#include <map_fragment>', `#include <map_fragment>
+      .replace('#include <map_fragment>', `
+        #ifdef SURF_WALL
+          // Wallpaper mapped in world space, so walls of any height keep its scale.
+          diffuseColor = vec4(diffuse, opacity) * texture2D(map, vec2((hW.x + hW.z) / 3.16, hW.y / 2.7));
+        #else
+          #include <map_fragment>
+        #endif
+        #ifdef SURF_PROP
+          diffuseColor.rgb *= 0.82 + 0.3 * texture2D(uGrime, hW.xz * 0.4 + hW.y * 0.25).g;
+        #endif
         #ifdef SURF_FLOOR
           float n1 = texture2D(uGrime, hW.xz * 0.03).r;
           float n2 = texture2D(uGrime, hW.xz * 0.19).g;
@@ -140,14 +161,15 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
           float along = hW.x + hW.z;
           float st = texture2D(uGrime, vec2(along * 0.06, hW.y * 0.08)).r;
           float streak = texture2D(uGrime, vec2(along * 0.35, 0.5)).b;
-          float wy = hL.y + ${H} * 0.5;
+          float wy = hW.y;
+          float topH = hWalls; // each wall instance carries its own top height
           float low = 1.0 - smoothstep(0.0, 1.3, wy);
           float damp = smoothstep(0.52, 0.8, st) * (0.35 + 0.65 * low);
           float drip = smoothstep(0.68, 0.92, streak) * smoothstep(0.3, 2.4, wy) * 0.45;
           float mottle = texture2D(uGrime, vec2(along * 0.4, hW.y * 0.4)).g;
           diffuseColor.rgb *= 0.9 + 0.2 * mottle;
           diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.55, 0.44, 0.26), clamp(damp * 0.85 + drip, 0.0, 1.0));
-          diffuseColor.rgb *= mix(0.5, 1.0, smoothstep(0.0, 0.5, wy)) * mix(0.7, 1.0, smoothstep(0.0, 0.4, ${H} - wy));
+          diffuseColor.rgb *= mix(0.5, 1.0, smoothstep(0.0, 0.5, wy)) * mix(0.7, 1.0, smoothstep(0.0, 0.4, topH - wy));
         #endif
         #ifdef SURF_CEIL
           vec2 tile = floor(hW.xz / 0.75);
@@ -164,8 +186,13 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
         roughnessFactor = mix(roughnessFactor, 0.28, hWet);`)
       .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
-        reflectedLight.indirectDiffuse *= hBright;
-        reflectedLight.indirectSpecular *= hBright;`);
+        #ifdef SURF_PROP
+          float gate = texture2D(uCellTex, hW.xz / uMapSize).r;
+        #else
+          float gate = hBright;
+        #endif
+        reflectedLight.indirectDiffuse *= gate;
+        reflectedLight.indirectSpecular *= gate;`);
   };
   m.customProgramCacheKey = () => `surf-${kind}`;
   return m;
@@ -189,6 +216,9 @@ export class World3D {
   private trim: THREE.InstancedMesh;
   private outlets: THREE.InstancedMesh;
   private wallKeys: number[] = [];
+  private trimKeys: number[] = [];
+  private cellTex: THREE.DataTexture;
+  private doorViews: { d: Door; pivot: THREE.Group; base: number; k: number; cur: number }[] = [];
   private floor: THREE.InstancedMesh;
   private ceil: THREE.InstancedMesh;
   private panels: THREE.InstancedMesh;
@@ -241,14 +271,20 @@ export class World3D {
     this.scene.add(new THREE.HemisphereLight(0xffeab0, 0x9a8048, 0.6));
 
     const CS = L.CS, H = CFG.WALL_H;
+    this.cellTex = new THREE.DataTexture(new Uint8Array(L.W * L.H * 4).fill(255), L.W, L.H);
+    this.cellTex.magFilter = this.cellTex.minFilter = THREE.LinearFilter;
+    this.cellTex.needsUpdate = true;
+    cellLight.tex.value = this.cellTex;
+    cellLight.size.value.set(L.W * CS, L.H * CS);
     const grime = T.grime();
     const paper = T.wallpaper(), carpet = T.carpet(), tiles = T.ceiling();
 
     // Walls: one instanced box per wall edge, with a baseboard and the odd outlet.
     const wallMat = surface('WALL', { map: paper.map, normalMap: paper.normal, normalScale: new THREE.Vector2(0.3, 0.3), roughness: 0.82 }, grime);
-    this.walls = instanced(new THREE.BoxGeometry(CS + 0.16, H, 0.16), wallMat, L.edgeCount);
+    // Unit boxes, scaled per instance: full walls, doorway jambs, and bulkheads where ceilings change height.
+    this.walls = instanced(new THREE.BoxGeometry(1, 1, 0.16), wallMat, L.edgeCount * 3);
     const trimMat = surface('TRIM', { color: 0x8d7650, roughness: 0.55 }, grime);
-    this.trim = instanced(new THREE.BoxGeometry(CS + 0.2, 0.12, 0.2), trimMat, L.edgeCount);
+    this.trim = instanced(new THREE.BoxGeometry(1, 0.12, 0.2), trimMat, L.edgeCount * 2);
     this.outlets = new THREE.InstancedMesh(
       new THREE.BoxGeometry(0.075, 0.115, 0.012),
       new THREE.MeshStandardMaterial({ map: T.outlet(), roughness: 0.4 }),
@@ -268,7 +304,7 @@ export class World3D {
       this.tmp.rotation.set(0, 0, 0);
       this.tmp.updateMatrix();
       this.floor.setMatrixAt(c, this.tmp.matrix);
-      this.tmp.position.y = H;
+      this.tmp.position.y = L.ceil[c];
       this.tmp.updateMatrix();
       this.ceil.setMatrixAt(c, this.tmp.matrix);
     }
@@ -280,7 +316,7 @@ export class World3D {
     this.panels.frustumCulled = false;
     this.panelCells.forEach((c, i) => {
       const p = L.center(c);
-      this.tmp.position.set(p.x, H - 0.015, p.z);
+      this.tmp.position.set(p.x, L.ceil[c] - 0.015, p.z);
       this.tmp.rotation.set(0, (c * 7) % 3 === 0 ? Math.PI / 2 : 0, 0);
       this.tmp.updateMatrix();
       this.panels.setMatrixAt(i, this.tmp.matrix);
@@ -307,7 +343,7 @@ export class World3D {
     holeMesh.count = holes.length;
     vents.forEach((c, i) => {
       const p = L.center(c);
-      this.tmp.position.set(p.x + 0.375, H - 0.012, p.z - 0.375);
+      this.tmp.position.set(p.x + 0.375, L.ceil[c] - 0.012, p.z - 0.375);
       this.tmp.rotation.set(0, 0, 0);
       this.tmp.updateMatrix();
       ventMesh.setMatrixAt(i, this.tmp.matrix);
@@ -315,7 +351,7 @@ export class World3D {
     holes.forEach((c, i) => {
       const p = L.center(c);
       const ox = ((hashString(`hx${c}`) % 4) - 1.5) * 0.75, oz = ((hashString(`hz${c}`) % 4) - 1.5) * 0.75;
-      this.tmp.position.set(p.x + ox, H - 0.006, p.z + oz);
+      this.tmp.position.set(p.x + ox, L.ceil[c] - 0.006, p.z + oz);
       this.tmp.rotation.set(0, 0, 0);
       this.tmp.updateMatrix();
       holeMesh.setMatrixAt(i, this.tmp.matrix);
@@ -324,18 +360,27 @@ export class World3D {
     this.scene.add(ventMesh, holeMesh);
 
     // Pillars.
-    this.pillars = instanced(new THREE.BoxGeometry(0.6, H, 0.6), wallMat, Math.max(1, L.pillars.length));
+    this.pillars = instanced(new THREE.BoxGeometry(0.6, 1, 0.6), wallMat, Math.max(1, L.pillars.length));
     this.pillars.count = L.pillars.length;
+    const pillarTop = this.pillars.geometry.getAttribute('aWalls') as THREE.InstancedBufferAttribute;
     L.pillars.forEach((p, i) => {
-      this.tmp.position.set(p.x, H / 2, p.z);
+      const vx = Math.round(p.x / CS), vy = Math.round(p.z / CS);
+      const ph = Math.max(...[[vx - 1, vy - 1], [vx, vy - 1], [vx - 1, vy], [vx, vy]]
+        .filter(([x, y]) => L.inBounds(x, y)).map(([x, y]) => L.ceil[L.cell(x, y)]));
+      this.tmp.position.set(p.x, ph / 2, p.z);
       this.tmp.rotation.set(0, 0, 0);
+      this.tmp.scale.set(1, ph, 1);
       this.tmp.updateMatrix();
+      this.tmp.scale.set(1, 1, 1);
+      pillarTop.setX(i, ph);
       this.pillars.setMatrixAt(i, this.tmp.matrix);
       this.pillarCells.push(L.cellAt(p.x - 0.1, p.z - 0.1));
     });
     this.scene.add(this.pillars);
 
     this.buildExits();
+    this.buildDoors(grime);
+    this.buildFurniture(grime);
 
     // The monster sees a little in the dark: a cold, faint light that follows its eyes.
     this.darkvision = new THREE.PointLight(0x6f86c0, 0, 8, 1.6);
@@ -414,6 +459,79 @@ export class World3D {
     }
   }
 
+  private buildFurniture(grime: THREE.Texture) {
+    const pm = (p: THREE.MeshStandardMaterialParameters) => surface('PROP', p, grime);
+    const mats: Record<PropMat, THREE.Material> = {
+      wood: pm({ color: 0x5e4129, roughness: 0.75 }),
+      laminate: pm({ color: 0xa39276, roughness: 0.6 }),
+      metal: pm({ color: 0x6f706b, roughness: 0.45, metalness: 0.55 }),
+      fabric: pm({ color: 0x39414c, roughness: 1 }),
+      plastic: pm({ color: 0xc7bf9f, roughness: 0.55 }),
+      mattress: pm({ color: 0xb3a47c, roughness: 0.95 }),
+      skin: pm({ color: 0xd8cdbd, roughness: 0.32 }),
+      paper: pm({ color: 0xe2dccb, roughness: 0.9 }),
+      dark: pm({ color: 0x1d1b19, roughness: 0.5 }),
+      // Glows whether or not there's power.
+      screen: new THREE.MeshBasicMaterial({ color: new THREE.Color(0.16, 0.32, 0.26) }),
+      shade: new THREE.MeshBasicMaterial({ color: new THREE.Color(1.8, 1.35, 0.7), side: THREE.DoubleSide }),
+    };
+    for (const [mat, geo] of buildProps(this.game.level.props)) {
+      const mesh = new THREE.Mesh(geo, mats[mat]);
+      mesh.frustumCulled = false;
+      this.scene.add(mesh);
+    }
+  }
+
+  /** Doors: doorway doors in their frames, and doors hung on walls with something (or nothing) behind them. */
+  private buildDoors(grime: THREE.Texture) {
+    const L = this.game.level;
+    const pm = (p: THREE.MeshStandardMaterialParameters) => surface('PROP', p, grime);
+    const doorMat = pm({ color: 0x80745e, roughness: 0.6 });
+    const frameMat = pm({ color: 0x3f362c, roughness: 0.55 });
+    const knobMat = pm({ color: 0xb8b0a0, roughness: 0.3, metalness: 0.8 });
+    const brickMat = pm({ map: T.brick(), roughness: 0.9 });
+    const voidMat = new THREE.MeshBasicMaterial({ color: 0x010101 });
+    const box = (parent: THREE.Object3D, mat: THREE.Material, sx: number, sy: number, sz: number, x: number, y: number, z: number) => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), mat);
+      m.position.set(x, y, z);
+      parent.add(m);
+      return m;
+    };
+    for (const d of L.doors) {
+      const base = Math.atan2(-d.tz, d.tx); // local +x runs along the edge
+      const front = -d.tz * d.nx + d.tx * d.nz; // local +z dotted with the door's normal
+      const wall = d.kind !== 'swing';
+      const off = wall ? 0.083 : 0;
+      const depth = wall ? 0.05 : d.free ? 0.12 : 0.2;
+
+      const frame = new THREE.Group();
+      frame.position.set(d.mx, 0, d.mz);
+      frame.rotation.y = base;
+      for (const s of [-1, 1]) box(frame, frameMat, 0.07, d.h + 0.07, depth, s * (d.w / 2 + 0.035), d.y0 + (d.h + 0.07) / 2, front * off);
+      box(frame, frameMat, d.w + 0.14, 0.07, depth, 0, d.y0 + d.h + 0.035, front * off);
+      if (wall) {
+        // What's behind it.
+        const z = front * 0.081;
+        if (d.variant === 'brick' || d.variant === 'high') box(frame, brickMat, d.w, d.h, 0.004, 0, d.y0 + d.h / 2, z);
+        else if (d.variant === 'double') {
+          box(frame, doorMat, d.w - 0.06, d.h - 0.04, 0.03, 0, d.y0 + (d.h - 0.04) / 2, front * 0.09);
+          box(frame, knobMat, 0.05, 0.05, 0.05, d.w / 2 - 0.12, d.y0 + 1.0, front * 0.11);
+        } else box(frame, voidMat, d.w, d.h, 0.004, 0, d.y0 + d.h / 2, z);
+      }
+      this.scene.add(frame);
+
+      // The panel swings on a hinge at one end of the opening.
+      const pivot = new THREE.Group();
+      pivot.position.set(d.mx - d.tx * d.w / 2 + d.nx * off, d.y0, d.mz - d.tz * d.w / 2 + d.nz * off);
+      pivot.rotation.y = base;
+      const pz = wall ? front * 0.025 : 0;
+      box(pivot, doorMat, d.w, d.h, 0.045, d.w / 2, d.h / 2, pz);
+      for (const s of [-1, 1]) box(pivot, knobMat, 0.05, 0.05, 0.05, d.w - 0.09, Math.min(1.0, d.h * 0.5), pz + s * 0.035);
+      this.scene.add(pivot);
+      this.doorViews.push({ d, pivot, base, k: d.nx * d.tz - d.nz * d.tx, cur: 0 });
+    }
+  }
+
   resize() {
     this.camera.aspect = window.innerWidth / window.innerHeight;
     this.camera.updateProjectionMatrix();
@@ -423,22 +541,55 @@ export class World3D {
 
   private rebuildWalls() {
     const L = this.game.level;
+    const CS = L.CS;
     this.wallKeys = [];
+    this.trimKeys = [];
     let outlets = 0;
+    const tops = this.walls.geometry.getAttribute('aWalls') as THREE.InstancedBufferAttribute;
+    // A slab along edge k, from a0 to a1 metres along it and y0 to y1 high.
+    const piece = (k: number, a0: number, a1: number, y0: number, y1: number, trim: boolean) => {
+      const s = L.edgeSegment(k);
+      const mid = (a0 + a1) / 2;
+      const x = s.horizontal ? s.x1 + mid : s.x1, z = s.horizontal ? s.z1 : s.z1 + mid;
+      this.tmp.rotation.set(0, s.horizontal ? 0 : Math.PI / 2, 0);
+      this.tmp.position.set(x, (y0 + y1) / 2, z);
+      this.tmp.scale.set(a1 - a0, y1 - y0, 1);
+      this.tmp.updateMatrix();
+      tops.setX(this.wallKeys.length, y1);
+      this.walls.setMatrixAt(this.wallKeys.length, this.tmp.matrix);
+      this.wallKeys.push(k);
+      if (trim) {
+        this.tmp.position.set(x, 0.06, z);
+        this.tmp.scale.set(a1 - a0 + 0.04, 1, 1);
+        this.tmp.updateMatrix();
+        this.trim.setMatrixAt(this.trimKeys.length, this.tmp.matrix);
+        this.trimKeys.push(k);
+      }
+      this.tmp.scale.set(1, 1, 1);
+    };
     for (let k = 0; k < L.edgeCount; k++) {
-      if (!L.isWall(k)) continue;
+      const top = L.edgeTop(k);
+      if (!L.isWall(k)) {
+        const [a, b] = L.edgeCells(k);
+        if (a < 0 || b < 0) continue;
+        const lo = Math.min(L.ceil[a], L.ceil[b]);
+        const d = L.doorOnEdge.get(k);
+        if (d && d.kind === 'swing' && !d.free) {
+          // A doorway: jambs either side and a lintel over the door.
+          const half = CS / 2, gap = d.w / 2 + 0.07;
+          piece(k, -0.08, half - gap, 0, top, true);
+          piece(k, half + gap, CS + 0.08, 0, top, true);
+          piece(k, half - gap, half + gap, d.h + 0.07, top, false);
+        } else if (top - lo > 0.01) {
+          // Where the ceiling steps up, the higher room's wall carries on above the opening.
+          piece(k, -0.08, CS + 0.08, lo, top, false);
+        }
+        continue;
+      }
+      piece(k, -0.08, CS + 0.08, 0, top, true);
       const s = L.edgeSegment(k);
       const mx = (s.x1 + s.x2) / 2, mz = (s.z1 + s.z2) / 2;
       const ry = s.horizontal ? 0 : Math.PI / 2;
-      const i = this.wallKeys.length;
-      this.tmp.rotation.set(0, ry, 0);
-      this.tmp.position.set(mx, CFG.WALL_H / 2, mz);
-      this.tmp.updateMatrix();
-      this.walls.setMatrixAt(i, this.tmp.matrix);
-      this.tmp.position.set(mx, 0.06, mz);
-      this.tmp.updateMatrix();
-      this.trim.setMatrixAt(i, this.tmp.matrix);
-      this.wallKeys.push(k);
       // An outlet on roughly one wall face in ten, chosen by edge so it never moves.
       const h = hashString(`out${k}`);
       if (h % 10 === 0) {
@@ -454,9 +605,11 @@ export class World3D {
         }
       }
     }
-    this.walls.count = this.trim.count = this.wallKeys.length;
+    this.walls.count = this.wallKeys.length;
+    this.trim.count = this.trimKeys.length;
     this.outlets.count = outlets;
     for (const m of [this.walls, this.trim, this.outlets]) m.instanceMatrix.needsUpdate = true;
+    tops.needsUpdate = true;
 
     // Contact shadows: each floor/ceiling tile knows which of its sides are walled.
     const fw = this.floor.geometry.getAttribute('aWalls') as THREE.InstancedBufferAttribute;
@@ -496,12 +649,23 @@ export class World3D {
       setB(this.floor, c, this.cellBright[c]);
       setB(this.ceil, c, this.cellBright[c]);
     }
-    this.wallKeys.forEach((k, i) => {
+    const edgeB = (k: number) => {
       const [a, b] = L.edgeCells(k);
-      const v = Math.max(a >= 0 ? this.cellBright[a] : 0, b >= 0 ? this.cellBright[b] : 0);
-      setB(this.walls, i, v);
-      setB(this.trim, i, v);
-    });
+      return Math.max(a >= 0 ? this.cellBright[a] : 0, b >= 0 ? this.cellBright[b] : 0);
+    };
+    this.wallKeys.forEach((k, i) => setB(this.walls, i, edgeB(k)));
+    this.trimKeys.forEach((k, i) => setB(this.trim, i, edgeB(k)));
+    const texData = this.cellTex.image.data as Uint8Array;
+    for (let c = 0; c < L.cells; c++) texData[c * 4] = Math.round(this.cellBright[c] * 255);
+    this.cellTex.needsUpdate = true;
+
+    // Doors swing towards where the game says they are; they slam faster than they open.
+    for (const v of this.doorViews) {
+      const target = v.d.open * v.k * 1.65;
+      const speed = target === 0 ? 5 : 2.4;
+      v.cur += Math.max(-speed * dt, Math.min(speed * dt, target - v.cur));
+      v.pivot.rotation.y = v.base + v.cur;
+    }
     this.pillarCells.forEach((c, i) => setB(this.pillars, i, this.cellBright[c]));
     for (const m of [this.floor, this.ceil, this.walls, this.trim, this.pillars]) {
       m.geometry.getAttribute('aBright').needsUpdate = true;
@@ -619,7 +783,7 @@ export class World3D {
       if (!k) { light.intensity = 0; return; }
       const c = this.panelCells[k.i];
       const p = L.center(c);
-      light.position.set(p.x, CFG.WALL_H - 0.25, p.z);
+      light.position.set(p.x, L.ceil[c] - 0.25, p.z);
       const fl = this.flicker[k.i] > 0 ? 1 : 0.2;
       // Fade out as a fixture nears the cut-off, so lights hand over without popping.
       const fade = Math.min(1, Math.max(0, (cutoff - k.d) / 2.5));

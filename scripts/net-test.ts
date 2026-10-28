@@ -91,6 +91,7 @@ check(stranger.last('error')?.msg === 'A night is already under way in Room 3', 
 check(stranger.last('rooms')?.rooms[2].playing === true, 'the room list shows the night under way');
 const snap0 = a.last('snap')?.s;
 check(!!snap0 && snap0.w.length === 3, 'snapshots stream; 2 players + 1 AI fill-in = 3 wanderers');
+check(typeof snap0?.doors === 'string' && snap0.doors.length > 20, `door states stream (${snap0?.doors.length} doors)`);
 check(((snap0?.w[0][8] ?? 0) & 128) !== 0 && ((snap0?.w[2][8] ?? 0) & 128) === 0, 'slots 0-1 are players, slot 2 is AI');
 
 // ---- In the night ----

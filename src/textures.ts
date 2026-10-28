@@ -316,6 +316,27 @@ export function grime() {
   return t;
 }
 
+/** Bricks behind a door that leads nowhere. */
+export function brick() {
+  const [c, g] = canvas(256, 256);
+  const r = rand(71);
+  g.fillStyle = '#2e2924';
+  g.fillRect(0, 0, 256, 256);
+  const bh = 22, bw = 64;
+  for (let row = 0; row * bh < 256; row++) {
+    const off = row % 2 ? bw / 2 : 0;
+    for (let x = -bw; x < 256; x += bw) {
+      const shade = 45 + r() * 35;
+      g.fillStyle = `rgb(${shade * 0.95 + 18},${shade * 0.62 + 6},${shade * 0.48 + 2})`;
+      g.fillRect(x + off + 2, row * bh + 2, bw - 4, bh - 4);
+    }
+  }
+  grain(g, 256, 256, 30, 72);
+  const t = colorTex(c);
+  t.repeat.set(1, 2);
+  return t;
+}
+
 export function exitSign() {
   const [c, g] = canvas(256, 96);
   g.fillStyle = '#0b1a0d';

@@ -88,6 +88,38 @@ export class SenseView {
     ctx.fillStyle = 'rgba(215,190,120,0.5)';
     for (const p of L.pillars) ctx.fillRect(this.sx(p.x) - 3, this.sy(p.z) - 3, 6, 6);
 
+    // Furniture, faintly.
+    ctx.strokeStyle = 'rgba(170,160,140,0.28)';
+    ctx.lineWidth = 1;
+    for (const b of L.solids) ctx.strokeRect(this.sx(b.x0), this.sy(b.z0), (b.x1 - b.x0) * s, (b.z1 - b.z0) * s);
+
+    // Doors: doorways in brown, doors to nowhere as small ticks, portals in violet with their links.
+    for (const d of L.doors) {
+      const ax = d.mx - d.tx * d.w / 2, az = d.mz - d.tz * d.w / 2;
+      const bx = d.mx + d.tx * d.w / 2, bz = d.mz + d.tz * d.w / 2;
+      const inset = d.kind === 'swing' ? 0 : 0.25;
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = d.kind === 'swing' ? (d.open ? 'rgba(170,120,70,0.45)' : '#b0784a')
+        : d.kind === 'portal' ? '#b07cff' : d.open ? 'rgba(150,150,150,0.4)' : 'rgba(170,170,170,0.8)';
+      ctx.setLineDash(d.open && d.kind === 'swing' ? [3, 3] : []);
+      ctx.beginPath();
+      ctx.moveTo(this.sx(ax + d.nx * inset), this.sy(az + d.nz * inset));
+      ctx.lineTo(this.sx(bx + d.nx * inset), this.sy(bz + d.nz * inset));
+      ctx.stroke();
+      ctx.setLineDash([]);
+      if (d.kind === 'portal' && d.link > d.id) {
+        const p = L.doors[d.link];
+        ctx.strokeStyle = 'rgba(176,124,255,0.18)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([2, 6]);
+        ctx.beginPath();
+        ctx.moveTo(this.sx(d.mx), this.sy(d.mz));
+        ctx.lineTo(this.sx(p.mx), this.sy(p.mz));
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+
     // Exits.
     for (const e of L.exits) {
       const k = L.edgeOf(e.cell, e.dir);

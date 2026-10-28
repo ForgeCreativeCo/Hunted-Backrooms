@@ -264,22 +264,31 @@ function gameMsg(c: Client, msg: ClientMsg) {
     if (c.role === 'monster') {
       const m = g.monster;
       const d = Math.hypot(x - m.x, z - m.z);
-      // Allow some slack for jitter; anything faster is snapped back.
-      if (d > CFG.MONSTER_SPEED * 1.3 * elapsed + 0.4) return send(c, { t: 'correct', x: m.x, z: m.z });
+      // Allow some slack for jitter; anything faster is snapped back, unless it's
+      // a step through an open portal door.
+      const fast = d > CFG.MONSTER_SPEED * 1.3 * elapsed + 0.4;
+      if (fast && !g.level.portalJump(m.x, m.z, x, z)) return send(c, { t: 'correct', x: m.x, z: m.z });
+      const px = m.x, pz = m.z;
       m.moving = d > 0.005;
       m.x = x;
       m.z = z;
-      if (m.seepT <= 0) g.collide();
+      if (m.seepT <= 0) {
+        if (!fast) g.pushDoors(m, CFG.MONSTER_RADIUS, x - px, z - pz, false);
+        g.collide();
+      }
       m.yaw = Number(msg.yaw) || 0;
       m.pitch = Number(msg.pitch) || 0;
     } else {
       const w = g.wanderers[c.slot];
       if (!w || !w.active || !w.player) return;
       const d = Math.hypot(x - w.x, z - w.z);
-      if (d > CFG.SPRINT * 1.3 * elapsed + 0.4) return send(c, { t: 'correct', x: w.x, z: w.z });
+      const fast = d > CFG.SPRINT * 1.3 * elapsed + 0.4;
+      if (fast && !g.level.portalJump(w.x, w.z, x, z)) return send(c, { t: 'correct', x: w.x, z: w.z });
+      const px = w.x, pz = w.z;
       w.moving = d > 0.005;
       w.x = x;
       w.z = z;
+      if (!fast) g.pushDoors(w, CFG.HUMAN_RADIUS, x - px, z - pz, false);
       g.collideBody(w, CFG.HUMAN_RADIUS);
       const yaw = Number(msg.yaw) || 0;
       w.heading = Math.atan2(-Math.cos(yaw), -Math.sin(yaw));

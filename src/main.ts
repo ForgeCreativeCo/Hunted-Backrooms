@@ -1,7 +1,7 @@
 import './style.css';
 import { Sound } from './audio';
 import { CFG } from './config';
-import { Game, GameEvents } from './game';
+import { Game, GameEvents, rotateYaw } from './game';
 import { Lobby, StartMsg } from './lobby';
 import { Net } from './net/client';
 import { applySnapshot, NetEvent, Role } from './net/protocol';
@@ -519,7 +519,10 @@ function frame(now: number) {
       me.heading = Math.atan2(fz, fx);
       me.pitch = S.world.look.pitch;
       me.sprint = keys.has('ShiftLeft') || keys.has('ShiftRight');
-      if (S.placed) g.moveHuman(me, fx * f - fz * r, fz * f + fx * r, dt);
+      if (S.placed) {
+        const turn = g.moveHuman(me, fx * f - fz * r, fz * f + fx * r, dt);
+        if (turn) S.world.look.yaw = rotateYaw(S.world.look.yaw, turn);
+      }
     } else {
       let vx: number, vz: number;
       if (view === 'hunt') {

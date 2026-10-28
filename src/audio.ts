@@ -228,6 +228,62 @@ export class Sound {
         this.noise(this.panner(x, z, 2.6), 0.12, 2000, 2, 0.5);
         this.tone(this.panner(x, z, 2.6), 'square', 120, 40, 0.5, 0.1);
         break;
+      case 'door': {
+        // A slow hinge creak.
+        const p = this.panner(x, z, 1.2);
+        const t = this.ctx.currentTime;
+        const src = this.ctx.createBufferSource();
+        src.buffer = this.noiseBuf;
+        const f = this.ctx.createBiquadFilter();
+        f.type = 'bandpass';
+        f.Q.value = 14;
+        f.frequency.setValueAtTime(380 + Math.random() * 200, t);
+        f.frequency.linearRampToValueAtTime(900 + Math.random() * 500, t + 0.45);
+        f.frequency.linearRampToValueAtTime(600, t + 0.8);
+        const g = this.ctx.createGain();
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.exponentialRampToValueAtTime(0.9, t + 0.08);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.85);
+        src.connect(f).connect(g).connect(p);
+        src.start(t, Math.random() * 0.4);
+        src.stop(t + 0.9);
+        break;
+      }
+      case 'doorShut': {
+        const p = this.panner(x, z, 1.2);
+        this.noise(p, 0.35, 110, 0.8, 1.2, 'lowpass');
+        this.noise(p, 0.06, 2400, 2, 0.4);
+        break;
+      }
+      case 'phone': {
+        // An old bell phone: three rings, somewhere out there.
+        const p = this.panner(x, z, 0.3);
+        p.refDistance = 4;
+        const t0 = this.ctx.currentTime;
+        for (let r = 0; r < 3; r++) {
+          const t = t0 + r * 3;
+          const g = this.ctx.createGain();
+          g.gain.value = 0;
+          const bell = this.ctx.createGain();
+          bell.gain.value = 0.14;
+          for (const hz of [440, 480]) {
+            const o = this.ctx.createOscillator();
+            o.frequency.value = hz;
+            o.connect(g);
+            o.start(t);
+            o.stop(t + 1.6);
+          }
+          // The clapper: amplitude chopped at 20 Hz.
+          const lfo = this.ctx.createOscillator();
+          lfo.type = 'square';
+          lfo.frequency.value = 20;
+          lfo.connect(g.gain);
+          lfo.start(t);
+          lfo.stop(t + 1.6);
+          g.connect(bell).connect(p);
+        }
+        break;
+      }
       case 'lightsOn':
         this.noise(this.panner(x, z, 2.6), 0.08, 2500, 2, 0.3);
         break;

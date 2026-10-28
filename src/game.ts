@@ -1,12 +1,13 @@
 import { CFG, Kind } from './config';
-import { DX, DY, Level, OPP } from './level';
+import { Box, DX, DY, Door, Level, OPP } from './level';
 import { RNG } from './rng';
 
 export type WState = 'explore' | 'alert' | 'flee' | 'hide' | 'escape' | 'panic' | 'chalk' | 'confused';
 
 export interface GameEvents {
   sound(
-    kind: 'step' | 'scream' | 'blackout' | 'lightsOn' | 'shift' | 'chalk' | 'gasp' | 'catch' | 'roar' | 'escape' | 'breath',
+    kind: 'step' | 'scream' | 'blackout' | 'lightsOn' | 'shift' | 'chalk' | 'gasp' | 'catch' | 'roar' | 'escape' | 'breath'
+      | 'door' | 'doorShut' | 'phone',
     x: number, z: number, loud: number, who?: Wanderer,
   ): void;
   caption(text: string, who: Wanderer | null): void;
@@ -141,11 +142,14 @@ export class Game {
   private distMonster: Int32Array = new Int32Array(0);
   private distKey = '';
   private decayT = 0;
+  private phoneT = 0;
+  private solidScratch: Box[] = [];
 
   constructor(public seed: string, public events: GameEvents, opts: GameOptions = {}) {
     this.level = new Level(seed);
     this.rng = new RNG(seed + ':night');
     this.blackout = new Float32Array(this.level.circuitCount);
+    this.phoneT = this.rng.range(45, 90);
     const m = this.level.center(this.level.monsterCell);
     this.monster.x = m.x;
     this.monster.z = m.z;
@@ -246,6 +250,8 @@ export class Game {
     }
 
     this.dread = Math.min(CFG.DREAD_MAX, this.dread + (CFG.DREAD_BASE + totalFear * CFG.DREAD_PER_FEAR) * dt);
+    this.updateDoors(dt);
+    this.updatePhone(dt);
 
     for (const p of this.pulses) p.age += dt;
     this.pulses = this.pulses.filter((p) => p.age < p.life);
@@ -426,12 +432,15 @@ export class Game {
     w.state = w.crouch ? 'hide' : sprinting && this.t - w.seenT < 4 ? 'flee' : 'explore';
   }
 
-  /** Move a player-controlled wanderer, with collision. Runs on their client and is checked by the server. */
-  moveHuman(w: Wanderer, vx: number, vz: number, dt: number) {
+  /**
+   * Move a player-controlled wanderer, with collision. Runs on their client and is
+   * checked by the server. Returns how far their view turned if they went through a portal.
+   */
+  moveHuman(w: Wanderer, vx: number, vz: number, dt: number): number {
     const L = this.level;
     const len = Math.hypot(vx, vz);
     w.moving = len > 0.01;
-    if (!w.moving || !w.active) return;
+    if (!w.moving || !w.active) return 0;
     const sprinting = w.sprint && !w.exhausted && !w.crouch;
     const speed = w.crouch ? CFG.HUMAN_CROUCH : w.exhausted ? CFG.EXHAUSTED : sprinting ? CFG.SPRINT : CFG.HUMAN_WALK;
     w.x += (vx / len) * speed * dt;
@@ -439,7 +448,13 @@ export class Game {
     const r = CFG.HUMAN_RADIUS;
     w.x = Math.max(r, Math.min(L.W * L.CS - r, w.x));
     w.z = Math.max(r, Math.min(L.H * L.CS - r, w.z));
+    const turn = this.pushDoors(w, r, vx, vz, true);
+    if (turn !== null) {
+      w.heading += turn;
+      this.addFear(w, 10);
+    }
     this.collideBody(w, r);
+    return turn ?? 0;
   }
 
   toggleFlash(w: Wanderer): string | null {
@@ -577,7 +592,15 @@ export class Game {
     // Movement.
     let speed = 0;
     if (!standing) {
-      if (w.next < 0) w.next = this.decide(w);
+      if (w.next < 0) {
+        w.next = this.decide(w);
+        if (w.next >= 0) {
+          const door = L.doorOnEdge.get(L.edgeOf(w.cell, L.dirBetween(w.cell, w.next)));
+          if (door && door.kind === 'swing' && door.open === 0) {
+            this.openDoor(door, L.cellAt(w.x, w.z) === door.cell ? -1 : 1);
+          }
+        }
+      }
       if (w.next >= 0) {
         speed = w.exhausted ? CFG.EXHAUSTED : sprinting ? CFG.SPRINT : CFG.WALK[w.kind] + w.fear * 0.006;
         const p = L.center(w.next);
@@ -787,7 +810,10 @@ export class Game {
     const r = CFG.MONSTER_RADIUS;
     m.x = Math.max(r, Math.min(L.W * L.CS - r, m.x));
     m.z = Math.max(r, Math.min(L.H * L.CS - r, m.z));
-    if (!seeping) this.collide();
+    if (seeping) return;
+    const turn = this.pushDoors(m, r, vx, vz, true);
+    if (turn !== null) m.yaw = rotateYaw(m.yaw, turn);
+    this.collide();
   }
 
   /** Push the monster out of walls and pillars. */
@@ -797,7 +823,6 @@ export class Game {
 
   collideBody(m: { x: number; z: number }, r: number) {
     const L = this.level;
-    const t = 0.08;
     for (let iter = 0; iter < 2; iter++) {
       const c0 = L.cellAt(m.x, m.z);
       const cx = L.cx(c0), cy = L.cy(c0);
@@ -805,12 +830,11 @@ export class Game {
         for (let x = cx - 1; x <= cx + 1; x++) {
           if (!L.inBounds(x, y)) continue;
           const c = L.cell(x, y);
-          for (let d = 0; d < 4; d++) {
-            const key = L.edgeOf(c, d);
-            if (!L.isWall(key)) continue;
-            const s = L.edgeSegment(key);
-            pushOut(m, Math.min(s.x1, s.x2) - t, Math.min(s.z1, s.z2) - t, Math.max(s.x1, s.x2) + t, Math.max(s.z1, s.z2) + t, r);
-          }
+          const boxes = this.solidScratch;
+          boxes.length = 0;
+          for (let d = 0; d < 4; d++) L.edgeSolids(L.edgeOf(c, d), boxes);
+          for (const i of L.solidsInCell.get(c) ?? []) boxes.push(L.solids[i]);
+          for (const b of boxes) pushOut(m, b.x0, b.z0, b.x1, b.z1, r);
         }
       }
       for (const p of L.pillars) {
@@ -866,6 +890,7 @@ export class Game {
     if (L.isBorder(key)) return 'The outer walls don\'t move';
     if (this.dread < CFG.SHIFT_COST) return 'Not enough dread';
     if (L.exits.some((e) => L.edgeOf(e.cell, e.dir) === key)) return 'Not the exit';
+    if (L.doorOnEdge.has(key)) return 'Doors stay where they are';
     const w = this.edgeWatched(key);
     if (w) return `${w.name} is watching that wall`;
     if (L.isWall(key)) return null;
@@ -918,6 +943,109 @@ export class Game {
     return null;
   }
 
+  // ---- Doors ----
+
+  openDoor(d: Door, sign: number) {
+    d.open = sign || 1;
+    d.openT = 0;
+    this.events.sound('door', d.mx, d.mz, 1);
+    // The monster can feel a door move anywhere in its building.
+    const p = { x: d.mx, z: d.mz, maxR: 1.6, age: 0, life: 1.1, fear: 0 };
+    this.pulses.push(p);
+  }
+
+  /**
+   * After a body moves by (vx, vz): push open any door it walks into. An open
+   * portal it walks into carries it to the partner door; returns how far its
+   * facing turned on the way, or null if it didn't go through.
+   */
+  pushDoors(b: { x: number; z: number }, r: number, vx: number, vz: number, allowPortal: boolean): number | null {
+    const L = this.level;
+    const c0 = L.cellAt(b.x, b.z);
+    const cx = L.cx(c0), cy = L.cy(c0);
+    for (let y = cy - 1; y <= cy + 1; y++) {
+      for (let x = cx - 1; x <= cx + 1; x++) {
+        if (!L.inBounds(x, y)) continue;
+        for (let dir = 0; dir < 4; dir++) {
+          const d = L.doorOnEdge.get(L.edgeOf(L.cell(x, y), dir));
+          if (!d) continue;
+          const px = b.x - d.mx, pz = b.z - d.mz;
+          if (Math.abs(px * d.tx + pz * d.tz) > d.w / 2) continue;
+          const dist = px * d.nx + pz * d.nz; // > 0 on the side it's seen from
+          const into = -(vx * d.nx + vz * d.nz);
+          if (d.kind === 'swing') {
+            if (d.open !== 0 || Math.abs(dist) > r + 0.3 || into * Math.sign(dist || 1) <= 0) continue;
+            this.openDoor(d, dist > 0 ? -1 : 1); // swings away from whoever pushed it
+            continue;
+          }
+          if (dist < 0 || dist > r + 0.3 || into <= 0 || d.variant === 'high') continue;
+          if (d.open === 0) {
+            this.openDoor(d, 1);
+          } else if (d.kind === 'portal' && allowPortal && dist < r + 0.14 && d.link >= 0) {
+            const p = L.doors[d.link];
+            const out = L.portalExit(p, r);
+            b.x = out.x;
+            b.z = out.z;
+            if (p.open === 0) this.openDoor(p, 1);
+            p.openT = 0;
+            return Math.atan2(p.nz, p.nx) - Math.atan2(-d.nz, -d.nx);
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  /** Is any wanderer looking at this door? */
+  private doorWatched(d: Door) {
+    const px = d.mx + d.nx * 0.3, pz = d.mz + d.nz * 0.3;
+    return this.wanderers.some((w) => w.active && this.canSeePoint(w, px, pz, this.isLit(this.level.cellAt(px, pz)), 0.1));
+  }
+
+  private bodyNear(d: Door, r: number) {
+    const near = (x: number, z: number) => Math.hypot(x - d.mx, z - d.mz) < r;
+    return near(this.monster.x, this.monster.z) || this.wanderers.some((w) => w.active && near(w.x, w.z));
+  }
+
+  /** Doors close themselves when nobody is watching; fake doors sometimes open the same way. */
+  private updateDoors(dt: number) {
+    for (const d of this.level.doors) {
+      if (d.open !== 0) {
+        d.openT += dt;
+        const limit = d.kind === 'portal' ? 7 : d.kind === 'fake' ? 14 : 28;
+        if (d.openT > limit && !this.bodyNear(d, 2.2) && !this.doorWatched(d)) {
+          d.open = 0;
+          this.events.sound('doorShut', d.mx, d.mz, 1);
+          for (const w of this.wanderers) {
+            if (!w.active || Math.hypot(w.x - d.mx, w.z - d.mz) > 12) continue;
+            this.addFear(w, 4);
+          }
+        }
+      } else if (d.kind === 'fake' && this.rng.chance(0.0015 * dt) && !this.doorWatched(d) && !this.bodyNear(d, 4)) {
+        this.openDoor(d, 1);
+      }
+    }
+  }
+
+  /** Every so often, an old phone somewhere starts ringing. */
+  private updatePhone(dt: number) {
+    this.phoneT -= dt;
+    if (this.phoneT > 0) return;
+    this.phoneT = this.rng.range(70, 150);
+    const phones = this.level.props.filter((p) => p.type === 'phone');
+    if (!phones.length) return;
+    const p = this.rng.pick(phones);
+    this.events.sound('phone', p.x, p.z, 1);
+    for (const w of this.wanderers) {
+      if (!w.active || Math.hypot(w.x - p.x, w.z - p.z) > 15) continue;
+      this.addFear(w, 6);
+      if (!w.player && (w.state === 'explore' || w.state === 'escape')) {
+        w.heading = Math.atan2(p.z - w.z, p.x - w.x);
+        this.setState(w, 'alert', 2);
+      }
+    }
+  }
+
   /** Wanderer the monster could catch right now, given its facing. */
   catchable(fx: number, fz: number): Wanderer | null {
     const m = this.monster;
@@ -959,6 +1087,12 @@ export class Game {
     }
     return pts;
   }
+}
+
+/** Turn a camera yaw (forward = (-sin, -cos)) by an angle in the heading convention (atan2(z, x)). */
+export function rotateYaw(yaw: number, turn: number) {
+  const h = Math.atan2(-Math.cos(yaw), -Math.sin(yaw)) + turn;
+  return Math.atan2(-Math.cos(h), -Math.sin(h));
 }
 
 function turnToward(a: number, b: number, maxStep: number) {

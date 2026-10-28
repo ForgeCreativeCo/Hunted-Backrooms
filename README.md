@@ -18,6 +18,14 @@ This starts the game server (port 8787) and the client (port 5173) together. Ope
 
 To play with people on other machines, use the production server below: it serves the game and the multiplayer connection from one port, so that's the only one others need to reach.
 
+## The level
+
+Every night is generated from its seed, so online players all walk the same building.
+
+- Rooms come in odd sizes: endless one-cell halls, huge pillared halls, closets. Some ceilings are cramped; some rise far higher than the building around them could allow.
+- Doors open when you walk into them, and close themselves when nobody is watching. Doorway doors lead on. Doors hung on walls mostly lead nowhere: bricks, a black void, another door, or a door too high to reach. A few pairs of tall doors open onto the dark and carry you to their partner somewhere else in the level.
+- Furniture is everywhere it shouldn't be: toppled office chairs, chairs stuck to the ceiling, circles of chairs facing nothing, chairs stacked into the ceiling, desks fused into walls, dinner set for nobody, CRTs glowing at the wall, mannequins, stairs that climb into the ceiling. Somewhere, an old phone rings.
+
 ## Multiplayer
 
 - The server runs the real night (AI, fear, abilities, catches) and streams it to everyone 30 times a second. Each player moves themselves and the server checks the move; a move that's too fast is snapped back.
@@ -68,10 +76,11 @@ Recorded clips live in `public/audio`; everything else is synthesized in `src/au
 | File | What it does |
 | --- | --- |
 | `src/config.ts` | Every tuning number |
-| `src/level.ts` | Seeded grid generation, walls as edges, BFS, line of sight |
+| `src/level.ts` | Seeded generation: rooms, ceiling heights, doors, furniture; walls as edges, BFS, line of sight |
 | `src/game.ts` | Rules, the wanderer state machine, abilities, human players and flashlights. No rendering, so the server and the sim can run it |
 | `src/world3d.ts` | Three.js first-person view for the monster and for humans |
 | `src/person.ts`, `src/creature.ts` | The wanderers' bodies, and the monster's as humans see it |
+| `src/props.ts` | Furniture and debris, merged into a few meshes |
 | `src/sense.ts` | Canvas sense view (and the spectator map) |
 | `src/audio.ts` | Positional audio: recorded clips, per-circuit hum, heartbeat |
 | `src/lobby.ts` | Multiplayer menu and lobby screens |
