@@ -3,7 +3,7 @@ import { Game, Wanderer } from './game';
 
 // Recorded clips for the big moments (public/audio), synthesized sound for the rest.
 // Positional where it matters, because sound is a mechanic.
-const CLIPS = ['ambience', 'roar', 'distant-screams', 'wail', 'jumpscare', 'scream-a', 'scream-b', 'breathing-1', 'breathing-2'] as const;
+const CLIPS = ['ambience', 'roar', 'distant-screams', 'wail', 'jumpscare', 'scream-a', 'scream-b', 'breathing-1', 'breathing-2', 'chase'] as const;
 type Clip = (typeof CLIPS)[number];
 // The roar file holds several separate roars: [start, length] in seconds.
 const ROARS = [[0, 2.1], [2.9, 2.2], [5.4, 1.6], [9.4, 2.2], [12.4, 1.6]];
@@ -16,6 +16,10 @@ export class Sound {
   private master: GainNode;
   private clips = new Map<Clip, AudioBuffer>();
   private ambience: AudioBufferSourceNode | null = null;
+  private chaseSrc: AudioBufferSourceNode | null = null;
+  private chaseGain: GainNode | null = null;
+  private chaseHold = 0;
+  private chaseQuiet = 0;
   private nextDistant = 0;
   private nextBeat = 0;
   private oscillators: OscillatorNode[] = [];
@@ -324,10 +328,53 @@ export class Sound {
     setTimeout(() => this.tone(this.master, 'sine', 55, 34, 0.14, vol * 0.7), 140);
   }
 
+  /**
+   * The chase music: in while someone is looking at the monster up close, and for a
+   * few seconds after, then a slow fade. Called every frame.
+   */
+  chase(on: boolean) {
+    const buf = this.clips.get('chase');
+    if (!buf || this.ctx.state !== 'running') return;
+    const now = this.ctx.currentTime;
+    if (on) this.chaseHold = now + 6;
+    const live = now < this.chaseHold;
+    if (live && !this.chaseSrc) {
+      // Each chase picks up somewhere in the loud middle of the track.
+      const src = this.ctx.createBufferSource();
+      src.buffer = buf;
+      src.loop = true;
+      src.loopStart = 20;
+      src.loopEnd = buf.duration - 20;
+      const g = this.ctx.createGain();
+      g.gain.value = 0;
+      src.connect(g).connect(this.master);
+      src.start(now, 20 + Math.random() * (buf.duration - 60));
+      this.chaseSrc = src;
+      this.chaseGain = g;
+    }
+    if (!this.chaseSrc || !this.chaseGain) return;
+    if (live) {
+      this.chaseQuiet = 0;
+      this.chaseGain.gain.setTargetAtTime(0.5, now, 0.5);
+    } else {
+      this.chaseGain.gain.setTargetAtTime(0, now, 2.5);
+      if (!this.chaseQuiet) this.chaseQuiet = now + 12;
+      else if (now > this.chaseQuiet) this.stopChase();
+    }
+  }
+
+  private stopChase() {
+    try { this.chaseSrc?.stop(); } catch { /* already stopped */ }
+    this.chaseSrc = null;
+    this.chaseGain = null;
+    this.chaseQuiet = 0;
+  }
+
   /** Stop everything this night started. */
   dispose() {
     for (const o of this.oscillators) { try { o.stop(); } catch { /* already stopped */ } }
     try { this.ambience?.stop(); } catch { /* already stopped */ }
+    this.stopChase();
     this.master.disconnect();
     this.listener.gain.disconnect();
     this.listener.removeFromParent();
