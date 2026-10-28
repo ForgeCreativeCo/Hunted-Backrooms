@@ -54,7 +54,8 @@ export class SenseView {
     return L.circuit[L.cellAt(wx, wz)];
   }
 
-  draw(t: number, aim: Aim, circuitLevel: (i: number) => number) {
+  /** spectate: a caught or escaped human watching; shows everyone where they really are. */
+  draw(t: number, aim: Aim, circuitLevel: (i: number) => number, spectate = false) {
     const g = this.game;
     const L = g.level;
     const ctx = this.ctx;
@@ -140,8 +141,8 @@ export class SenseView {
     ctx.textAlign = 'center';
     for (const w of g.wanderers) {
       if (!w.active) continue;
-      const since = g.t - w.lastHeardT;
-      const x = this.sx(w.heardX), y = this.sy(w.heardZ);
+      const since = spectate ? 0 : g.t - w.lastHeardT;
+      const x = this.sx(spectate ? w.x : w.heardX), y = this.sy(spectate ? w.z : w.heardZ);
       const a = Math.max(0.15, 1 - since / 4);
       if (since > 4) {
         ctx.fillStyle = 'rgba(200,200,200,0.35)';
@@ -168,6 +169,14 @@ export class SenseView {
       ctx.fillStyle = `rgba(230,230,230,${a * 0.9})`;
       ctx.font = '11px ui-monospace, monospace';
       const tag = w.state === 'hide' ? ' · hiding' : w.state === 'panic' ? ' · PANIC' : w.state === 'escape' ? ' · → exit' : '';
+      if (spectate && w.flash) {
+        // Their flashlight beam.
+        ctx.fillStyle = 'rgba(255,230,150,0.12)';
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.arc(x, y, 10 * s, w.heading - 0.37, w.heading + 0.37);
+        ctx.fill();
+      }
       ctx.fillText(`${w.name} ${Math.round(w.fear)}${tag}`, x, y - 15);
       if (w.sees) {
         ctx.strokeStyle = 'rgba(255,60,60,0.6)';

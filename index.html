@@ -24,8 +24,8 @@
       <div id="crosshair"></div>
       <div id="prompt"></div>
       <div id="captions"></div>
-      <div id="bottom">
-        <div id="dread"><span>DREAD</span><div id="dreadbar"><div id="dreadfill"></div></div><b id="dreadnum">30</b></div>
+      <div id="bottom" class="monster-only">
+        <div id="dread"><span>DREAD</span><div class="bar"><div id="dreadfill" class="fill dread"></div></div><b id="dreadnum">30</b></div>
         <div id="abilities">
           <div class="ab" id="ab-blackout"><kbd>1</kbd>Blackout <i>20</i></div>
           <div class="ab" id="ab-shift"><kbd>2</kbd>Shift <i>15</i></div>
@@ -34,6 +34,17 @@
           <div class="ab" id="ab-view"><kbd>Tab</kbd><span id="viewname">Sense view</span></div>
         </div>
       </div>
+      <div id="humanbar" class="human-only">
+        <div class="meter"><span>STAMINA</span><div class="bar"><div id="stamfill" class="fill stam"></div></div></div>
+        <div class="meter"><span>BATTERY</span><div class="bar"><div id="battfill" class="fill batt"></div></div></div>
+        <div id="hkeys">
+          <div class="ab ready"><kbd>Shift</kbd>Sprint</div>
+          <div class="ab ready"><kbd>C</kbd>Crouch</div>
+          <div class="ab ready" id="hk-flash"><kbd>F</kbd>Flashlight</div>
+          <div class="ab ready"><kbd>E</kbd>Draw arrow</div>
+        </div>
+      </div>
+      <div id="spectate" hidden></div>
     </div>
 
     <div class="overlay" id="title">
@@ -57,8 +68,43 @@
           <li>Harvest <b id="quota">120</b> fear before 6 AM.</li>
         </ul>
       </div>
-      <p class="go">Click to begin</p>
+      <div class="buttons">
+        <button id="solo" class="primary">Play solo</button>
+        <button id="multi">Multiplayer</button>
+      </div>
       <p class="seed" id="seedline"></p>
+    </div>
+
+    <div class="overlay" id="mp" hidden>
+      <h2>Multiplayer</h2>
+      <p class="pitch">One player is the monster. Up to four play the humans, with no map, a chalk stick and a dying flashlight. AI wanderers fill the empty slots.</p>
+      <label class="field">Your name <input id="mpname" maxlength="16" autocomplete="off" /></label>
+      <div class="buttons">
+        <button id="create" class="primary">Create lobby</button>
+      </div>
+      <div class="join">
+        <input id="joincode" maxlength="4" placeholder="CODE" autocomplete="off" />
+        <button id="join">Join</button>
+      </div>
+      <p id="mpstatus" class="status"></p>
+      <button id="mpback" class="link">Back</button>
+    </div>
+
+    <div class="overlay" id="lobby" hidden>
+      <p class="seed">Lobby code — share it with the other players</p>
+      <div id="code" class="code"></div>
+      <ul id="players"></ul>
+      <p id="fillnote" class="seed"></p>
+      <div class="buttons">
+        <button id="be-monster">Play the monster</button>
+        <button id="be-human">Play a human</button>
+      </div>
+      <div class="buttons">
+        <button id="ready" class="primary">Ready</button>
+        <button id="start" class="primary" hidden>Start the night</button>
+      </div>
+      <p id="lobbystatus" class="status"></p>
+      <button id="leave" class="link">Leave lobby</button>
     </div>
 
     <div class="overlay" id="pause" hidden>
@@ -86,6 +132,7 @@
       <div class="buttons">
         <button id="replay">Replay this night</button>
         <button id="newnight">New night</button>
+        <button id="tolobby" class="primary" hidden>Back to the lobby</button>
       </div>
     </div>
 

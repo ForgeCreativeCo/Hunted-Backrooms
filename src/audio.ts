@@ -17,6 +17,8 @@ export class Sound {
   private clips = new Map<Clip, AudioBuffer>();
   private ambience: AudioBufferSourceNode | null = null;
   private nextDistant = 0;
+  private nextBeat = 0;
+  private oscillators: OscillatorNode[] = [];
   private breathUntil = new Map<number, number>();
   private camera: THREE.Camera;
 
@@ -54,6 +56,7 @@ export class Sound {
       lp.connect(gain);
       o1.start();
       o2.start();
+      this.oscillators.push(o1, o2);
       const audio = new THREE.PositionalAudio(this.listener);
       audio.setNodeSource(gain as unknown as AudioScheduledSourceNode);
       audio.setRefDistance(4);
@@ -236,10 +239,42 @@ export class Sound {
     }
   }
 
+  /** A faint electronic whine as the eyes adjust, and a drop as they relax. */
+  nightVision(on: boolean) {
+    if (this.ctx.state !== 'running') return;
+    if (on) {
+      this.tone(this.master, 'sine', 900, 5200, 0.7, 0.025);
+      this.noise(this.master, 0.25, 4000, 1, 0.08);
+    } else {
+      this.tone(this.master, 'sine', 3000, 600, 0.35, 0.015);
+    }
+  }
+
   ui(kind: 'deny' | 'select') {
     if (this.ctx.state !== 'running') return;
     if (kind === 'deny') this.tone(this.master, 'square', 140, 110, 0.15, 0.05);
     else this.tone(this.master, 'sine', 330, 440, 0.08, 0.04);
+  }
+
+  /** A human's own heartbeat, faster and louder as fear climbs. fear is 0..1. */
+  heartbeat(fear: number) {
+    if (this.ctx.state !== 'running' || fear < 0.3) return;
+    const now = this.ctx.currentTime;
+    if (now < this.nextBeat) return;
+    const bpm = 70 + fear * 90;
+    this.nextBeat = now + 60 / bpm;
+    const vol = 0.15 + fear * 0.35;
+    this.tone(this.master, 'sine', 62, 38, 0.16, vol);
+    setTimeout(() => this.tone(this.master, 'sine', 55, 34, 0.14, vol * 0.7), 140);
+  }
+
+  /** Stop everything this night started. */
+  dispose() {
+    for (const o of this.oscillators) { try { o.stop(); } catch { /* already stopped */ } }
+    try { this.ambience?.stop(); } catch { /* already stopped */ }
+    this.master.disconnect();
+    this.listener.gain.disconnect();
+    this.listener.removeFromParent();
   }
 
   /** Called each frame with per-circuit light levels so the hum follows the lights. */

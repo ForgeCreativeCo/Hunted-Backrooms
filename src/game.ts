@@ -1,5 +1,5 @@
 import { CFG, Kind } from './config';
-import { Level, OPP } from './level';
+import { DX, DY, Level, OPP } from './level';
 import { RNG } from './rng';
 
 export type WState = 'explore' | 'alert' | 'flee' | 'hide' | 'escape' | 'panic' | 'chalk' | 'confused';
@@ -11,6 +11,13 @@ export interface GameEvents {
   ): void;
   caption(text: string, who: Wanderer | null): void;
   toast(text: string): void;
+  /** A footstep or breath the monster can sense. */
+  pulse?(p: Pulse, who: Wanderer): void;
+}
+
+export interface GameOptions {
+  /** Names of human players. They take the first wanderer slots; AI fills the rest. */
+  players?: string[];
 }
 
 export interface Pulse {
@@ -81,6 +88,14 @@ export class Wanderer {
   jz = 0;
   walkPhase = 0;
   lastSpeed = 0;
+  // Human players: position and look come from their client.
+  player = false;
+  pitch = 0;
+  moving = false;
+  sprint = false;
+  crouch = false;
+  flash = false;
+  battery = 100;
 
   constructor(public id: number, public kind: Kind, public name: string, public enterAt: number, cells: number) {
     this.visits = new Float32Array(cells);
@@ -127,7 +142,7 @@ export class Game {
   private distKey = '';
   private decayT = 0;
 
-  constructor(public seed: string, public events: GameEvents) {
+  constructor(public seed: string, public events: GameEvents, opts: GameOptions = {}) {
     this.level = new Level(seed);
     this.rng = new RNG(seed + ':night');
     this.blackout = new Float32Array(this.level.circuitCount);
@@ -138,13 +153,23 @@ export class Game {
     const s = this.level.center(this.level.spawnCell);
     this.monster.yaw = Math.atan2(-(s.x - m.x), -(s.z - m.z));
 
-    const kinds: Kind[] = ['panicker', 'mapper', 'panicker'];
-    const names = this.rng.shuffle([...NAMES]);
-    kinds.forEach((k, i) => {
-      const w = new Wanderer(i, k, names[i], CFG.WANDERER_ENTRY[i] ?? i * 25, this.level.cells);
+    // Players take the first slots and enter at dusk; AI wanderers fill the rest
+    // (always at least three prey) and drift in over the first minute.
+    const players = opts.players ?? [];
+    const aiKinds: Kind[] = ['panicker', 'mapper', 'panicker', 'mapper'];
+    const names = this.rng.shuffle([...NAMES]).filter((n) => !players.includes(n));
+    const total = Math.max(3, players.length);
+    let ai = 0;
+    for (let i = 0; i < total; i++) {
+      const isPlayer = i < players.length;
+      const kind: Kind = isPlayer ? (i % 2 ? 'mapper' : 'panicker') : aiKinds[ai % aiKinds.length];
+      const name = isPlayer ? players[i] : names[ai];
+      const w = new Wanderer(i, kind, name, isPlayer ? 0 : CFG.WANDERER_ENTRY[i] ?? i * 25, this.level.cells);
       w.voice = this.rng.int(2);
+      w.player = isPlayer;
+      if (!isPlayer) ai++;
       this.wanderers.push(w);
-    });
+    }
   }
 
   get over() { return this.result !== null; }
@@ -152,7 +177,7 @@ export class Game {
 
   isLit(cell: number) { return this.blackout[this.level.circuit[cell]] <= 0; }
 
-  fearMult(w: Wanderer) { return CFG.FEAR_MULT[w.kind]; }
+  fearMult(w: Wanderer) { return w.player ? 1 : CFG.FEAR_MULT[w.kind]; }
 
   addFear(w: Wanderer, amount: number) {
     if (amount > 0) amount *= this.fearMult(w);
@@ -160,6 +185,7 @@ export class Game {
   }
 
   private say(w: Wanderer, lines: string[]) {
+    if (w.player) return; // real people speak for themselves
     this.events.caption(this.rng.pick(lines), w);
   }
 
@@ -208,11 +234,16 @@ export class Game {
     for (const w of this.wanderers) {
       if (!w.entered && this.t >= w.enterAt) this.enter(w);
       if (!w.active) continue;
-      this.updateWanderer(w, dt);
+      if (w.player) this.updatePlayer(w, dt);
+      else this.updateWanderer(w, dt);
       if (w.sees) m.seen = true;
       totalFear += w.fear;
     }
-    if (m.seen && m.seepT > 0) { m.seepT = 0; m.seepCD = CFG.SEEP_COOLDOWN; this.events.toast('Seen — the wall rejects you'); }
+    if ((m.seen || this.inAnyBeam(m.x, m.z)) && m.seepT > 0) {
+      m.seepT = 0;
+      m.seepCD = CFG.SEEP_COOLDOWN;
+      this.events.toast('Seen — the wall rejects you');
+    }
 
     this.dread = Math.min(CFG.DREAD_MAX, this.dread + (CFG.DREAD_BASE + totalFear * CFG.DREAD_PER_FEAR) * dt);
 
@@ -248,6 +279,7 @@ export class Game {
     w.entered = true;
     w.mem[w.cell] = L.mask(w.cell);
     w.visits[w.cell] = 1;
+    if (w.player) return;
     this.setState(w, 'alert', 2.5);
     this.say(w, LINES.enter);
   }
@@ -274,8 +306,25 @@ export class Game {
 
   private seesMonster(w: Wanderer) {
     const m = this.monster;
-    if (w.state === 'panic') return Math.hypot(m.x - w.x, m.z - w.z) < 2;
-    return this.canSeePoint(w, m.x, m.z, this.isLit(this.level.cellAt(m.x, m.z)));
+    if (w.state === 'panic' && !w.player) return Math.hypot(m.x - w.x, m.z - w.z) < 2;
+    const lit = this.isLit(this.level.cellAt(m.x, m.z)) || this.inBeamOf(w, m.x, m.z);
+    return this.canSeePoint(w, m.x, m.z, lit);
+  }
+
+  // ---- Flashlights ----
+
+  /** Is this point inside the wanderer's flashlight beam? */
+  inBeamOf(w: Wanderer, px: number, pz: number): boolean {
+    if (!w.flash || !w.active) return false;
+    const dx = px - w.x, dz = pz - w.z;
+    const d = Math.hypot(dx, dz);
+    if (d > CFG.BEAM_RANGE) return false;
+    if (d > 0.5 && (dx * Math.cos(w.heading) + dz * Math.sin(w.heading)) / d < CFG.BEAM_COS) return false;
+    return this.level.los(w.x, w.z, px, pz);
+  }
+
+  inAnyBeam(px: number, pz: number): boolean {
+    return this.wanderers.some((w) => w.flash && this.inBeamOf(w, px, pz));
   }
 
   /** Is anyone looking at this edge? The space only changes when nobody watches. */
@@ -300,6 +349,130 @@ export class Game {
 
   monsterWatched() {
     return this.wanderers.some((w) => w.active && this.seesMonster(w));
+  }
+
+  // ---- Human players ----
+
+  /**
+   * Players move on their own clients; here they get the same fear, stamina and
+   * noise rules as AI wanderers, plus a flashlight battery.
+   */
+  private updatePlayer(w: Wanderer, dt: number) {
+    const L = this.level;
+    const m = this.monster;
+    w.cell = L.cellAt(w.x, w.z);
+
+    if (L.exitCells.has(w.cell)) {
+      w.escaped = true;
+      w.flash = false;
+      this.events.sound('escape', w.x, w.z, 1);
+      this.events.toast(`${w.name} found an exit and escaped`);
+      return;
+    }
+
+    const saw = w.sees;
+    w.sees = this.seesMonster(w);
+    const dm = Math.hypot(m.x - w.x, m.z - w.z);
+    if (w.sees) {
+      if (!saw && this.t - w.seenT > 4) {
+        this.addFear(w, dm < 2 * L.CS ? 30 : 15);
+        if (dm < 2 * L.CS) {
+          this.events.sound('scream', w.x, w.z, 1, w);
+          this.events.sound('roar', m.x, m.z, 1);
+        }
+      }
+      this.addFear(w, (dm < 2 * L.CS ? 22 : 9) * dt);
+      w.seenT = this.t;
+    }
+    const lit = this.isLit(w.cell);
+    if (!lit && !w.flash) this.addFear(w, 1.5 * dt);
+    else if (lit && this.t - w.seenT > 6) w.fear = Math.max(0, w.fear - 0.7 * dt);
+
+    const sprinting = w.sprint && w.moving && !w.exhausted && !w.crouch;
+    if (sprinting) w.stamina -= CFG.STAMINA_DRAIN * dt;
+    else w.stamina = Math.min(100, w.stamina + CFG.STAMINA_REGEN * dt * (w.moving ? 1 : 1.5));
+    if (w.stamina <= 0) { w.stamina = 0; w.exhausted = true; }
+    if (w.exhausted && w.stamina >= 40) w.exhausted = false;
+
+    if (w.flash) {
+      w.battery = Math.max(0, w.battery - CFG.BATTERY_DRAIN * dt);
+      if (w.battery <= 0) w.flash = false;
+    }
+
+    // Noise. Crouch-walking is nearly silent; crouching still in the dark, with
+    // the light off, they're holding their breath.
+    if (w.moving) {
+      w.stepT -= dt;
+      if (w.stepT <= 0) {
+        w.stepT = sprinting ? 0.3 : w.crouch ? 0.8 : 0.55;
+        const loud = (sprinting ? 2.2 : w.crouch ? 0.4 : 1) * (1 + w.fear / 150);
+        this.emitNoise(w, loud, !w.crouch);
+      }
+    } else {
+      w.breathT -= dt;
+      if (w.breathT <= 0) {
+        w.breathT = w.fear > 60 ? 1.2 : 2.2;
+        if (!(w.crouch && !lit && !w.flash)) this.emitNoise(w, w.crouch ? 0.35 : 0.55, false);
+      }
+    }
+    w.breathSndT -= dt;
+    const winded = w.exhausted || (!w.moving && w.fear > 45);
+    if (winded && w.breathSndT <= 0 && !(w.crouch && !lit && !w.flash)) {
+      w.breathSndT = 3.5;
+      this.events.sound('breath', w.x, w.z, w.exhausted ? 1 : 0.7, w);
+    }
+
+    // Drives their body's pose for everyone else.
+    w.state = w.crouch ? 'hide' : sprinting && this.t - w.seenT < 4 ? 'flee' : 'explore';
+  }
+
+  /** Move a player-controlled wanderer, with collision. Runs on their client and is checked by the server. */
+  moveHuman(w: Wanderer, vx: number, vz: number, dt: number) {
+    const L = this.level;
+    const len = Math.hypot(vx, vz);
+    w.moving = len > 0.01;
+    if (!w.moving || !w.active) return;
+    const sprinting = w.sprint && !w.exhausted && !w.crouch;
+    const speed = w.crouch ? CFG.HUMAN_CROUCH : w.exhausted ? CFG.EXHAUSTED : sprinting ? CFG.SPRINT : CFG.HUMAN_WALK;
+    w.x += (vx / len) * speed * dt;
+    w.z += (vz / len) * speed * dt;
+    const r = CFG.HUMAN_RADIUS;
+    w.x = Math.max(r, Math.min(L.W * L.CS - r, w.x));
+    w.z = Math.max(r, Math.min(L.H * L.CS - r, w.z));
+    this.collideBody(w, r);
+  }
+
+  toggleFlash(w: Wanderer): string | null {
+    if (!w.flash && w.battery <= 0) return 'The battery is dead';
+    w.flash = !w.flash;
+    return null;
+  }
+
+  /** Draw an arrow on the floor here, pointing the open way closest to where they face. */
+  drawChalk(w: Wanderer): string | null {
+    const L = this.level;
+    const c = L.cellAt(w.x, w.z);
+    const dirs = L.openDirs(c);
+    if (!dirs.length) return 'Nowhere to point';
+    const fx = Math.cos(w.heading), fz = Math.sin(w.heading);
+    let dir = dirs[0], best = -Infinity;
+    for (const d of dirs) {
+      const dot = DX[d] * fx + DY[d] * fz;
+      if (dot > best) { best = dot; dir = d; }
+    }
+    this.chalk.set(c, { dir, by: w.id });
+    this.events.sound('chalk', w.x, w.z, 0.5);
+    return null;
+  }
+
+  /** A player left mid-night: an AI takes over their body. */
+  releasePlayer(w: Wanderer) {
+    w.player = false;
+    w.flash = false;
+    w.crouch = false;
+    w.cell = this.level.cellAt(w.x, w.z);
+    w.next = -1;
+    w.state = 'explore';
   }
 
   // ---- Wanderer brain ----
@@ -474,7 +647,9 @@ export class Game {
     w.lastHeardT = this.t;
     w.heardX = w.x;
     w.heardZ = w.z;
-    this.pulses.push({ x: w.x, z: w.z, maxR: loud * 2.2, age: 0, life: 1.1, fear: w.fear });
+    const p = { x: w.x, z: w.z, maxR: loud * 2.2, age: 0, life: 1.1, fear: w.fear };
+    this.pulses.push(p);
+    this.events.pulse?.(p, w);
     if (audible) this.events.sound('step', w.x, w.z, loud);
   }
 
@@ -605,7 +780,8 @@ export class Game {
     m.moving = len > 0.01;
     if (!m.moving) return;
     const seeping = m.seepT > 0;
-    const speed = seeping ? CFG.SEEP_SPEED : CFG.MONSTER_SPEED;
+    // A flashlight beam slows the monster to half speed.
+    const speed = (seeping ? CFG.SEEP_SPEED : CFG.MONSTER_SPEED) * (this.inAnyBeam(m.x, m.z) ? 0.5 : 1);
     m.x += (vx / len) * speed * dt;
     m.z += (vz / len) * speed * dt;
     const r = CFG.MONSTER_RADIUS;
@@ -616,9 +792,12 @@ export class Game {
 
   /** Push the monster out of walls and pillars. */
   collide() {
-    const m = this.monster;
+    this.collideBody(this.monster, CFG.MONSTER_RADIUS);
+  }
+
+  collideBody(m: { x: number; z: number }, r: number) {
     const L = this.level;
-    const r = CFG.MONSTER_RADIUS, t = 0.08;
+    const t = 0.08;
     for (let iter = 0; iter < 2; iter++) {
       const c0 = L.cellAt(m.x, m.z);
       const cx = L.cx(c0), cy = L.cy(c0);
@@ -641,9 +820,16 @@ export class Game {
     }
   }
 
+  /** A flashlight on the monster blocks its abilities. */
+  private beamBlocks(): string | null {
+    return this.inAnyBeam(this.monster.x, this.monster.z) ? 'A light is on you' : null;
+  }
+
   trySeep(): string | null {
     const m = this.monster;
     if (m.seepT > 0) return null;
+    const beam = this.beamBlocks();
+    if (beam) return beam;
     if (m.seepCD > 0) return `Seep recovering (${m.seepCD.toFixed(0)}s)`;
     if (this.monsterWatched()) return 'Someone is watching you';
     m.seepT = CFG.SEEP_DURATION;
@@ -653,6 +839,8 @@ export class Game {
   tryBlackout(circuit: number): string | null {
     if (circuit < 0) return 'No circuit there';
     if (this.blackout[circuit] > 0) return 'That circuit is already dark';
+    const beam = this.beamBlocks();
+    if (beam) return beam;
     if (this.dread < CFG.BLACKOUT_COST) return 'Not enough dread';
     this.dread -= CFG.BLACKOUT_COST;
     this.blackout[circuit] = CFG.BLACKOUT_TIME;
@@ -673,6 +861,8 @@ export class Game {
   shiftCheck(key: number): string | null {
     const L = this.level;
     if (key < 0) return 'No wall there';
+    const beam = this.beamBlocks();
+    if (beam) return beam;
     if (L.isBorder(key)) return 'The outer walls don\'t move';
     if (this.dread < CFG.SHIFT_COST) return 'Not enough dread';
     if (L.exits.some((e) => L.edgeOf(e.cell, e.dir) === key)) return 'Not the exit';
@@ -749,6 +939,7 @@ export class Game {
     const pts = Math.max(5, Math.round(w.fear));
     this.score += pts;
     w.caught = true;
+    w.flash = false;
     this.events.sound('catch', w.x, w.z, 1);
     this.events.sound('scream', w.x, w.z, 1, w);
     this.events.toast(`${w.name} caught · +${pts} fear`);

@@ -181,6 +181,11 @@ export class Person {
     return m;
   }
 
+  setVisible(v: boolean) {
+    this.root.visible = v;
+    this.shadow.visible = v;
+  }
+
   addTo(scene: THREE.Object3D) {
     scene.add(this.root, this.shadow);
   }

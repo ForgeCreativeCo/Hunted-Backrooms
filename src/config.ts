@@ -45,6 +45,17 @@ export const CFG = {
   STAMINA_DRAIN: 14,
   STAMINA_REGEN: 8,
   FEAR_MULT: { panicker: 1.4, mapper: 0.85 },
+
+  // Human players
+  MAX_HUMANS: 4,
+  HUMAN_WALK: 1.9,
+  HUMAN_CROUCH: 1.0,
+  HUMAN_RADIUS: 0.3,
+  HUMAN_EYE: 1.62,
+  CROUCH_EYE: 1.05,
+  BATTERY_DRAIN: 1.1, // per second: about 90 s of light
+  BEAM_RANGE: 10, // metres
+  BEAM_COS: 0.93, // half-angle of about 21°
 };
 
 export type Kind = 'panicker' | 'mapper';

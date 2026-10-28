@@ -85,8 +85,12 @@ kbd {
   display: flex; align-items: center; gap: 22px; flex-wrap: wrap;
 }
 #dread { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--dim); }
-#dreadbar { width: 180px; height: 8px; background: rgba(255, 255, 255, 0.1); border-radius: 4px; overflow: hidden; }
-#dreadfill { height: 100%; width: 30%; background: var(--dread); transition: width 0.2s; }
+.bar { width: 180px; height: 8px; background: rgba(255, 255, 255, 0.1); border-radius: 4px; overflow: hidden; }
+.fill { height: 100%; width: 30%; transition: width 0.2s; }
+.fill.dread { background: var(--dread); }
+.fill.stam { background: #e8dfc0; }
+.fill.batt { background: #ffd76a; }
+.fill.low { background: var(--accent); }
 #dreadnum { color: var(--fg); min-width: 2.5em; }
 #abilities { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; }
 .ab { background: var(--panel); padding: 5px 9px; border-radius: 4px; opacity: 0.55; }
@@ -97,6 +101,7 @@ kbd {
 .overlay {
   position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
   background: rgba(0, 0, 0, 0.82); text-align: center; padding: 16px;
+  justify-content: safe center; overflow-y: auto;
 }
 .overlay[hidden] { display: none; }
 .overlay.black { background: #000; }
@@ -121,3 +126,42 @@ button {
   border: 1px solid #6d6650; border-radius: 4px; cursor: pointer;
 }
 button:hover { border-color: var(--fg); }
+
+/* Role-specific HUD */
+body.role-human .monster-only, body.role-monster .human-only, body.role-spectator .monster-only, body.role-spectator .human-only { display: none !important; }
+#humanbar {
+  position: absolute; bottom: 14px; left: 16px; right: 16px;
+  display: flex; align-items: center; gap: 22px; flex-wrap: wrap;
+}
+.meter { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--dim); }
+.meter .bar { width: 140px; }
+#hkeys { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; }
+#spectate {
+  position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+  background: var(--panel); padding: 8px 16px; border-radius: 4px; font-size: 13px; text-align: center;
+}
+
+/* Menus and lobby */
+button.primary { border-color: var(--fg); background: rgba(232, 223, 192, 0.08); }
+button:disabled { opacity: 0.35; cursor: default; }
+button.link { border: none; color: var(--dim); text-decoration: underline; margin-top: 14px; }
+.overlay .buttons { margin-top: 14px; flex-wrap: wrap; justify-content: center; }
+input {
+  font: inherit; font-size: 15px; color: var(--fg); background: rgba(0, 0, 0, 0.5);
+  border: 1px solid #6d6650; border-radius: 4px; padding: 9px 12px; outline: none;
+}
+input:focus { border-color: var(--fg); }
+.field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--dim); margin-top: 16px; text-align: left; }
+.join { display: flex; gap: 8px; margin-top: 14px; }
+#joincode { width: 7em; text-transform: uppercase; letter-spacing: 0.3em; text-align: center; }
+.status { min-height: 1.4em; color: var(--accent); font-size: 13px; margin: 10px 0 0; }
+.code { font-size: clamp(48px, 12vw, 84px); letter-spacing: 0.3em; margin: 0 0 12px 0.3em; color: #f2e6b0; }
+#players { list-style: none; padding: 0; margin: 0; width: min(420px, 92vw); text-align: left; }
+#players li {
+  display: flex; justify-content: space-between; gap: 12px; padding: 9px 12px;
+  border-bottom: 1px solid rgba(232, 223, 192, 0.12); font-size: 14px;
+}
+#players li .r { color: var(--dim); }
+#players li .r.monster { color: var(--accent); }
+#players li .r.ok::after { content: ' · ready'; color: var(--ok); }
+#players li.you { background: rgba(232, 223, 192, 0.05); }

@@ -5,6 +5,7 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { CFG } from './config';
+import { Creature } from './creature';
 import { Game } from './game';
 import { Person } from './person';
 import { hashString } from './rng';
@@ -18,12 +19,18 @@ const POOL = 8; // real point lights, moved to the nearest visible fixtures each
 const POOL_REACH = 18;
 
 // Film grain, a slight colour fringe and a vignette: the monster's eyes.
+// In a dark circuit they switch to night vision: whatever light there is,
+// amplified into a pale green image.
 const HuntShader = {
   uniforms: {
     tDiffuse: { value: null },
     time: { value: 0 },
     redden: { value: 0 },
     seep: { value: 0 },
+    nv: { value: 0 },
+    nvFlash: { value: 0 },
+    fear: { value: 0 },
+    lens: { value: 1 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -33,24 +40,42 @@ const HuntShader = {
     uniform float time;
     uniform float redden;
     uniform float seep;
+    uniform float nv;
+    uniform float nvFlash;
+    uniform float fear;
+    uniform float lens;
     varying vec2 vUv;
     float rand(vec2 co) { return fract(sin(dot(co, vec2(12.9898, 78.233))) * 43758.5453); }
     void main() {
       vec2 c = vUv - 0.5;
       float d = dot(c, c);
-      vec2 uv = 0.5 + c * (1.0 + 0.08 * d);
+      vec2 uv = 0.5 + c * (1.0 + 0.08 * d * lens);
       uv.x += seep * 0.006 * sin(uv.y * 40.0 + time * 6.0);
-      float ab = 0.003 + 0.01 * d + seep * 0.01;
+      float ab = (0.003 + 0.01 * d) * lens + seep * 0.01 + fear * 0.006 * d;
       vec3 col;
       col.r = texture2D(tDiffuse, uv + c * ab).r;
       col.g = texture2D(tDiffuse, uv).g;
       col.b = texture2D(tDiffuse, uv - c * ab).b;
       float lum = dot(col, vec3(0.299, 0.587, 0.114));
+      if (nv > 0.0) {
+        float amp = pow(1.0 - exp(-lum * 6.0), 1.25);
+        col = mix(col, vec3(0.5, 0.95, 0.68) * (0.02 + amp * 0.8), nv);
+        lum = mix(lum, amp, nv);
+      }
       // Grain is stronger in the shadows, like a sensor pushed too far.
-      col += (rand(uv * 900.0 + fract(time * 7.0)) - 0.5) * mix(0.05, 0.02, clamp(lum, 0.0, 1.0));
-      col *= 0.97 + 0.03 * sin(uv.y * 900.0 + time * 12.0);
-      col *= 1.0 - d * 1.5;
+      vec3 gtint = mix(vec3(1.0), vec3(0.7, 1.0, 0.8), nv);
+      float grain = mix(0.05, 0.02, clamp(lum, 0.0, 1.0)) + nv * 0.07 + nvFlash * 0.5;
+      col += (rand(uv * 900.0 + fract(time * 7.0)) - 0.5) * grain * gtint;
+      col += nvFlash * 0.25 * vec3(0.6, 1.0, 0.8);
+      col *= 0.97 + (0.03 + nv * 0.05) * sin(uv.y * 900.0 + time * 12.0);
+      col *= 1.0 - d * (1.5 + nv * 1.2);
       col = mix(col, vec3(col.r * 1.3, col.g * 0.4, col.b * 0.4), redden);
+      // Human fear: colour drains, vision tunnels, and the edges pulse with the heartbeat.
+      if (fear > 0.0) {
+        col = mix(col, vec3(dot(col, vec3(0.299, 0.587, 0.114))), fear * 0.55);
+        float beat = pow(max(0.0, sin(time * (5.0 + fear * 6.0))), 14.0) * fear;
+        col *= 1.0 - d * (fear * 2.2 + beat * 1.8);
+      }
       gl_FragColor = vec4(col, 1.0);
     }`,
 };
@@ -185,6 +210,18 @@ export class World3D {
   private tmp = new THREE.Object3D();
   private col = new THREE.Color();
   private lastT = 0;
+  /** 0..1, eased; on while the monster stands in a blacked-out circuit. */
+  nightVision = 0;
+  private nvOn = false;
+  private nvFlash = 0;
+  onNightVision: ((on: boolean) => void) | null = null;
+  /** Whose eyes we're looking through: the monster, or a human player's slot. */
+  viewer: { role: 'monster' } | { role: 'human'; slot: number } = { role: 'monster' };
+  /** A human viewer's look direction (their client owns it). */
+  look = { yaw: 0, pitch: 0 };
+  private eye: number = CFG.HUMAN_EYE;
+  private creature = new Creature();
+  private spots: THREE.SpotLight[] = [];
 
   constructor(private game: Game, canvas: HTMLCanvasElement) {
     const L = game.level;
@@ -303,6 +340,16 @@ export class World3D {
     // The monster sees a little in the dark: a cold, faint light that follows its eyes.
     this.darkvision = new THREE.PointLight(0x6f86c0, 0, 8, 1.6);
     this.camera.add(this.darkvision);
+
+    // Flashlights, one per wanderer slot. Always in the scene (off = 0 intensity)
+    // so turning one on doesn't recompile every shader.
+    for (let i = 0; i < game.wanderers.length; i++) {
+      const spot = new THREE.SpotLight(0xfff2d8, 0, 18, 0.36, 0.55, 1.4);
+      this.scene.add(spot, spot.target);
+      this.spots.push(spot);
+    }
+    this.creature.root.visible = false;
+    this.scene.add(this.creature.root);
 
     // Dust hanging in the air.
     const n = 700;
@@ -470,19 +517,49 @@ export class World3D {
     });
     if (this.panels.instanceColor) this.panels.instanceColor.needsUpdate = true;
 
-    // Camera = the monster's eyes.
     const m = g.monster;
-    const sway = m.moving ? Math.sin(t * 7) * 0.03 : 0;
-    this.camera.position.set(m.x, CFG.EYE_HEIGHT + sway, m.z);
-    this.camera.rotation.set(m.pitch, m.yaw, 0);
+    const human = this.viewer.role === 'human' ? g.wanderers[this.viewer.slot] : null;
+    if (human) {
+      // A human's eyes: lower, bobbing as they walk, ducking when they crouch.
+      this.eye += ((human.crouch ? CFG.CROUCH_EYE : CFG.HUMAN_EYE) - this.eye) * Math.min(1, dt * 10);
+      const bob = human.moving ? Math.sin(t * (human.sprint ? 13 : 9)) * (human.sprint ? 0.06 : 0.035) : 0;
+      this.camera.position.set(human.x, this.eye + bob, human.z);
+      this.camera.rotation.set(this.look.pitch, this.look.yaw, 0);
+    } else {
+      // The monster's eyes.
+      const sway = m.moving ? Math.sin(t * 7) * 0.03 : 0;
+      this.camera.position.set(m.x, CFG.EYE_HEIGHT + sway, m.z);
+      this.camera.rotation.set(m.pitch, m.yaw, 0);
+    }
+    const vx = this.camera.position.x, vz = this.camera.position.z;
+    this.camera.updateMatrixWorld();
 
-    this.placeLights(m.x, m.z);
+    this.placeLights(vx, vz);
+    this.placeFlashlights(t);
+    this.creature.root.visible = !!human;
+    if (human) this.creature.update(m.x, m.z, m.yaw, dt, t);
 
-    const here = this.cellBright[L.cellAt(m.x, m.z)];
-    this.darkvision.intensity = 2.8 * (1 - here) + 0.15;
+    const here = this.cellBright[L.cellAt(vx, vz)];
+    // Night vision follows the blackout timer, not the flickering light level,
+    // so it switches once: after the lights die, and off as they stutter back.
+    const b = g.blackout[L.circuit[L.cellAt(m.x, m.z)]];
+    const nvTarget = !human && b > 0.9 && b < CFG.BLACKOUT_TIME - 0.5;
+    if (nvTarget !== this.nvOn) {
+      this.nvOn = nvTarget;
+      if (nvTarget) this.nvFlash = 1;
+      this.onNightVision?.(nvTarget);
+    }
+    this.nightVision += ((nvTarget ? 1 : 0) - this.nightVision) * Math.min(1, dt * 5);
+    this.nvFlash = Math.max(0, this.nvFlash - dt * 3);
+    // Like an infrared illuminator: night vision brings its own light, reaching further.
+    // Humans' eyes adjust a little to the dark; the monster sees much more.
+    this.darkvision.intensity = human ? 0.35 * (1 - here) : 2.8 * (1 - here) + 0.15 + this.nightVision * 6;
+    this.darkvision.distance = human ? 4 : 8 + this.nightVision * 6;
+    this.darkvision.color.set(human ? 0x9aa4b8 : 0x6f86c0);
+
     const fog = this.scene.fog as THREE.FogExp2;
     fog.color.copy(FOG_DARK).lerp(FOG_LIT, here);
-    fog.density = 0.042 + (1 - here) * 0.03;
+    fog.density = 0.042 + (1 - here) * 0.03 - this.nightVision * 0.025;
     (this.scene.background as THREE.Color).copy(fog.color);
 
     // Dust drifts and wraps around the camera.
@@ -493,7 +570,7 @@ export class World3D {
       arr[i + 1] -= 0.02 * dt;
       arr[i + 2] += Math.cos(t * 0.27 + i) * 0.04 * dt;
       for (let a = 0; a < 3; a++) {
-        const center = a === 0 ? m.x : a === 1 ? CFG.WALL_H / 2 : m.z;
+        const center = a === 0 ? vx : a === 1 ? CFG.WALL_H / 2 : vz;
         const half = a === 1 ? CFG.WALL_H / 2 : 6;
         let v = arr[i + a];
         if (v < center - half) v += half * 2;
@@ -503,6 +580,8 @@ export class World3D {
     }
     dp.needsUpdate = true;
     this.dustMat.opacity = 0.45 * here + 0.05;
+    // Dust follows whoever is looking.
+    this.dust.position.set(0, 0, 0);
 
     this.syncChalk();
     this.syncPeople(dt, t);
@@ -510,6 +589,10 @@ export class World3D {
     this.hunt.uniforms.time.value = t;
     this.hunt.uniforms.redden.value = redden;
     this.hunt.uniforms.seep.value = m.seepT > 0 ? 1 : 0;
+    this.hunt.uniforms.nv.value = this.nightVision;
+    this.hunt.uniforms.nvFlash.value = this.nvFlash;
+    this.hunt.uniforms.fear.value = human ? Math.max(0, (human.fear - 25) / 75) : 0;
+    this.hunt.uniforms.lens.value = human ? 0.4 : 1;
   }
 
   /** Move the light pool to the nearest lit fixtures the camera can see. */
@@ -544,8 +627,40 @@ export class World3D {
     });
   }
 
+  /** Point each lit flashlight from its owner's hands along their gaze. */
+  private placeFlashlights(t: number) {
+    const g = this.game;
+    g.wanderers.forEach((w, i) => {
+      const spot = this.spots[i];
+      if (!spot) return;
+      const on = w.active && w.flash;
+      // A dying battery flickers.
+      const flick = w.battery < 12 && Math.sin(t * 37 + i) > 0.6 ? 0.25 : 1;
+      spot.intensity = on ? 32 * flick : 0;
+      if (!on) return;
+      const self = this.viewer.role === 'human' && this.viewer.slot === i;
+      if (self) {
+        const dir = new THREE.Vector3(0, -0.04, -1).applyQuaternion(this.camera.quaternion);
+        const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion);
+        spot.position.copy(this.camera.position).addScaledVector(right, 0.18).add(new THREE.Vector3(0, -0.25, 0));
+        spot.target.position.copy(this.camera.position).addScaledVector(dir, 10);
+      } else {
+        const fx = Math.cos(w.heading), fz = Math.sin(w.heading);
+        const y = w.crouch ? 0.9 : 1.35;
+        spot.position.set(w.x + fx * 0.3, y, w.z + fz * 0.3);
+        spot.target.position.set(w.x + fx * 10, y - Math.sin(w.pitch) * 10 - 0.5, w.z + fz * 10);
+      }
+      spot.target.updateMatrixWorld();
+    });
+  }
+
   render() {
     this.composer.render();
+  }
+
+  dispose() {
+    this.renderer.dispose();
+    this.renderer.forceContextLoss();
   }
 
   /** Keep the audio listener (a child of the camera) current when the 3D view isn't drawn. */
@@ -587,7 +702,9 @@ export class World3D {
         p.addTo(this.scene);
         this.people.set(w.id, p);
       }
-      p.update(w, dt, t, this.cellBright[w.cell] ?? 1);
+      // Night vision picks out bodies in the dark a little better than walls.
+      p.update(w, dt, t, Math.max(this.cellBright[w.cell] ?? 1, this.nightVision * 0.5));
+      p.setVisible(!(this.viewer.role === 'human' && this.viewer.slot === w.id));
     }
   }
 }
