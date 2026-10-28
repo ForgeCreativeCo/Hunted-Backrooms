@@ -6,8 +6,8 @@ import { Game, Wanderer } from './game';
 const CLIPS = ['ambience', 'roar', 'distant-screams', 'wail', 'jumpscare', 'scream-a', 'scream-b', 'breathing-1', 'breathing-2', 'music'] as const;
 type Clip = (typeof CLIPS)[number];
 // The roar file holds several separate roars: [start, length] in seconds.
-// How loud the PA music sits under everything else.
-const MUSIC_VOL = 0.11;
+// How loud the PA music is right under the speaker; it fades with distance from there.
+const MUSIC_VOL = 0.32;
 const ROARS = [[0, 2.1], [2.9, 2.2], [5.4, 1.6], [9.4, 2.2], [12.4, 1.6]];
 
 export class Sound {
@@ -20,6 +20,7 @@ export class Sound {
   private ambience: AudioBufferSourceNode | null = null;
   private music: AudioBufferSourceNode | null = null;
   private musicLevel: GainNode | null = null;
+  private musicOut: PannerNode | null = null;
   private hiss: AudioBufferSourceNode | null = null;
   private nextDropout = 0;
   private nextDistant = 0;
@@ -27,10 +28,12 @@ export class Sound {
   private oscillators: OscillatorNode[] = [];
   private breathUntil = new Map<number, number>();
   private camera: THREE.Camera;
+  private pa: { x: number; z: number; y: number };
 
   constructor(game: Game, camera: THREE.Camera, scene: THREE.Scene) {
     camera.add(this.listener);
     this.camera = camera;
+    this.pa = game.level.pa;
     this.ctx = this.listener.context;
     this.master = this.ctx.createGain();
     this.master.gain.value = 0.9;
@@ -126,7 +129,7 @@ export class Sound {
   }
 
   /**
-   * Background music, as if from a tired old PA somewhere in the ceiling: mono,
+   * Background music, as if from a tired old PA speaker over the middle of the map: mono,
    * band-limited, overdriven, played slow and wavering, smeared by the room and
    * echoed by a speaker further off. Now and then the signal drops out.
    */
@@ -208,7 +211,18 @@ export class Sound {
     drive.connect(room).connect(wet).connect(level);
     drive.connect(echo).connect(echoOut).connect(level);
     echo.connect(echoBack).connect(echo);
-    level.connect(this.master);
+    // All of it comes from the one speaker over the middle of the map: loud under it,
+    // faint by the outer walls.
+    const speaker = ctx.createPanner();
+    speaker.panningModel = 'HRTF';
+    // About -13 dB at 10 m, -22 dB at 20 m and -31 dB out by the walls.
+    speaker.distanceModel = 'exponential';
+    speaker.refDistance = 4;
+    speaker.rolloffFactor = 1.6;
+    speaker.positionX.value = this.pa.x;
+    speaker.positionY.value = this.pa.y - 0.5;
+    speaker.positionZ.value = this.pa.z;
+    level.connect(speaker).connect(this.master);
     src.start(now, 2);
 
     // Line hiss under it.
@@ -226,6 +240,7 @@ export class Sound {
 
     this.music = src;
     this.musicLevel = level;
+    this.musicOut = speaker;
     this.hiss = hiss;
     this.nextDropout = now + 25 + Math.random() * 30;
   }
@@ -241,8 +256,10 @@ export class Sound {
     g.gain.linearRampToValueAtTime(0.02, t + 0.04);
     g.gain.setValueAtTime(0.02, t + gone);
     g.gain.linearRampToValueAtTime(MUSIC_VOL, t + gone + 0.08);
-    this.noise(this.master, 0.03, 2500, 1, 0.12);
-    setTimeout(() => this.noise(this.master, 0.03, 1800, 1, 0.1), gone * 1000);
+    // The crackles come from the speaker too.
+    const out = this.musicOut ?? this.master;
+    this.noise(out, 0.03, 2500, 1, 0.35);
+    setTimeout(() => this.noise(out, 0.03, 1800, 1, 0.3), gone * 1000);
   }
 
   resume() {

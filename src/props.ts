@@ -124,6 +124,18 @@ function stairs(b: Builder, ceil: number) {
   }
 }
 
+function speaker(b: Builder) {
+  // An old PA horn on a rod, built hanging down from the ceiling (+y is down).
+  b.box('metal', 0.2, 0.02, 0.2, 0, 0.01, 0);
+  b.cyl('metal', 0.014, 0.014, 0.36, 0, 0.19, 0);
+  // Horn axis pointing outwards and down, 60° from the rod.
+  const tilt = Math.PI / 3, ay = Math.cos(tilt), az = Math.sin(tilt);
+  const dy = 0.42;
+  b.cyl('dark', 0.075, 0.075, 0.14, 0, dy - ay * 0.04, -az * 0.04, tilt);
+  b.cyl('metal', 0.25, 0.065, 0.38, 0, dy + ay * 0.22, az * 0.22, tilt, 0, 0, true);
+  b.cyl('dark', 0.06, 0.06, 0.01, 0, dy + ay * 0.04, az * 0.04, tilt);
+}
+
 export function buildProps(props: Prop[]): Map<PropMat, THREE.BufferGeometry> {
   const b = new Builder();
   const flip = new THREE.Matrix4().makeRotationX(Math.PI);
@@ -152,6 +164,7 @@ export function buildProps(props: Prop[]): Map<PropMat, THREE.BufferGeometry> {
         break;
       case 'stairs': stairs(b, p.v / 10); break;
       case 'paper': b.box('paper', 0.21, 0.002, 0.297, 0, 0, 0); break;
+      case 'speaker': speaker(b); break;
     }
   }
   const out = new Map<PropMat, THREE.BufferGeometry>();

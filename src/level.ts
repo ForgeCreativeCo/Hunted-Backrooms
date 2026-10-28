@@ -45,7 +45,7 @@ export interface Door {
   openT: number;
 }
 
-export type PropType = 'chair' | 'desk' | 'cabinet' | 'crt' | 'mattress' | 'lamp' | 'phone' | 'mannequin' | 'stairs' | 'paper';
+export type PropType = 'chair' | 'desk' | 'cabinet' | 'crt' | 'mattress' | 'lamp' | 'phone' | 'mannequin' | 'stairs' | 'paper' | 'speaker';
 
 /** A piece of furniture or debris. Front is local +z; `ceil` props hang upside down from the ceiling. */
 export interface Prop {
@@ -98,6 +98,8 @@ export class Level {
   doors: Door[] = [];
   doorOnEdge = new Map<number, Door>();
   props: Prop[] = [];
+  /** Where the PA music plays from: over the middle of the map, at ceiling height. */
+  pa = { x: 0, z: 0, y: 2.3 };
   /** Furniture collision boxes, and which cells each one touches. */
   solids: Box[] = [];
   solidsInCell = new Map<number, number[]>();
@@ -718,6 +720,11 @@ export class Level {
       solidAt(px, pz, 0.72, 0.38, s.horizontal ? Math.PI / 2 : 0);
       fused++;
     }
+
+    // The PA speaker the music comes from, hanging over the middle of the map.
+    const pc = this.cell(W >> 1, H >> 1);
+    this.pa = { ...this.center(pc), y: this.ceil[pc] };
+    prop({ type: 'speaker', x: this.pa.x, z: this.pa.z, y: this.pa.y, ry: rng.range(0, Math.PI * 2), ceil: true });
   }
 
   /** Where a body comes out of a portal door. */
