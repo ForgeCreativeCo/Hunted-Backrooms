@@ -3,6 +3,7 @@ import { Sound } from './audio';
 import { CFG } from './config';
 import { Game, GameEvents, rotateYaw } from './game';
 import { Lobby, StartMsg } from './lobby';
+import { MonsterAI } from './monsterAI';
 import { Net } from './net/client';
 import { applySnapshot, NetEvent, Role } from './net/protocol';
 import { randomSeed } from './rng';
@@ -59,6 +60,8 @@ interface Session {
   sendT: number;
   /** Human players this night; they hold the first wanderer slots. */
   humans: number;
+  /** Solo as a human: the monster plays itself. */
+  ai: MonsterAI | null;
   off: (() => void) | null;
 }
 
@@ -99,7 +102,7 @@ function makeSession(seed: string, role: Role, slot: number, net: Net | null, pl
   world.footage = footage;
   $('nightshot').hidden = true;
   if (role === 'human') world.viewer = { role: 'human', slot };
-  const s: Session = { net, game, world, sense, sound, role, slot, seed, spectating: false, placed: role !== 'human', sendT: 0, humans: players?.length ?? 0, off: null };
+  const s: Session = { net, game, world, sense, sound, role, slot, seed, spectating: false, placed: role !== 'human', sendT: 0, humans: players?.length ?? 0, ai: null, off: null };
   if (import.meta.env.DEV) Object.assign(window, { hum: s });
   return s;
 }
@@ -152,9 +155,51 @@ function beginPlay() {
   setView('hunt');
 }
 
+// ---- Solo: monster or human ----
+
+let soloAs: Role = 'monster';
+try { if (localStorage.getItem('hum-solo-as') === 'human') soloAs = 'human'; } catch { /* storage blocked */ }
+function pickSolo(r: Role) {
+  soloAs = r;
+  document.body.classList.toggle('solo-human', r === 'human');
+  document.body.classList.toggle('solo-monster', r === 'monster');
+  for (const b of document.querySelectorAll<HTMLButtonElement>('.pick button')) {
+    b.classList.toggle('on', b.dataset.as === r);
+    b.setAttribute('aria-checked', String(b.dataset.as === r));
+  }
+  try { localStorage.setItem('hum-solo-as', r); } catch { /* storage blocked */ }
+}
+for (const b of document.querySelectorAll<HTMLButtonElement>('.pick button')) {
+  b.addEventListener('click', () => pickSolo(b.dataset.as as Role));
+}
+pickSolo(soloAs);
+
 function startSolo() {
   if (!urlSeed) history.replaceState(null, '', `?seed=${encodeURIComponent(S.seed)}`);
+  if (soloAs === 'human') {
+    let name = '';
+    try { name = localStorage.getItem('hum-name') ?? ''; } catch { /* storage blocked */ }
+    const seed = S.seed;
+    endSession();
+    S = makeSession(seed, 'human', 0, null, [name || 'You']);
+    S.ai = new MonsterAI(S.game);
+  }
   beginPlay();
+}
+
+let soloReason = '';
+/** Solo as a human, the night is over for you once you're out of it. */
+function soloOut(me: { caught: boolean }) {
+  const g = S.game;
+  const ws = g.wanderers;
+  g.result = {
+    score: g.score, quota: CFG.QUOTA, stars: 0, reason: 'empty',
+    caught: ws.filter((w) => w.caught).length, escaped: ws.filter((w) => w.escaped).length,
+  };
+  S.spectating = true;
+  soloReason = me.caught ? 'It found you' : 'You found an exit';
+  if (me.caught) showCatch('TAKEN');
+  else showEnd();
 }
 
 function startOnline(msg: StartMsg) {
@@ -368,8 +413,14 @@ window.addEventListener('keydown', (e) => {
   if (S.role === 'human') {
     const me = self()!;
     switch (e.code) {
-      case 'KeyF': S.net?.send({ t: 'act', a: 'flash' }); break;
-      case 'KeyE': S.net?.send({ t: 'act', a: 'chalk' }); break;
+      case 'KeyF':
+        if (S.net) S.net.send({ t: 'act', a: 'flash' });
+        else act(S.game.toggleFlash(me));
+        break;
+      case 'KeyE':
+        if (S.net) S.net.send({ t: 'act', a: 'chalk' });
+        else act(S.game.drawChalk(me), 'You draw an arrow');
+        break;
       case 'KeyC': me.crouch = !me.crouch; break;
     }
     return;
@@ -479,7 +530,8 @@ function updateHud() {
   if (me) {
     $('score').textContent = `IT HAS FED ${g.score} / ${CFG.QUOTA}`;
     $('roster').innerHTML = '';
-    for (const w of g.wanderers.slice(0, S.humans)) {
+    // Online you know who the other players are; solo, everyone lost in here.
+    for (const w of S.net ? g.wanderers.slice(0, S.humans) : g.wanderers.filter((w) => w.entered)) {
       const line = document.createElement('div');
       line.textContent = `${w.name}${w === me ? ' (you)' : ''} · ${w.caught ? 'taken' : w.escaped ? 'escaped' : 'out there'}`;
       $('roster').appendChild(line);
@@ -522,7 +574,7 @@ function updateHud() {
   }
 }
 
-function showEnd(reason?: string) {
+function showEnd(reason = soloReason) {
   const r = S.game.result!;
   mode = 'over';
   document.exitPointerLock();
@@ -535,8 +587,9 @@ function showEnd(reason?: string) {
     : fed ? 'Fed' : 'Hungry';
   $('endsummary').textContent = `${reason ? `${reason}. ` : r.reason === 'dawn' ? 'Dawn came. ' : 'The level is empty. '}` +
     `${me ? 'The thing' : 'You'} harvested ${r.score} fear of ${r.quota} needed · caught ${r.caught} · escaped ${r.escaped}.` +
-    (online ? (fed ? ' The monster wins.' : ' The humans win.') : fed ? '' : ' Replay the night.');
+    (online ? (fed ? ' The monster wins.' : ' The humans win.') : fed || me ? '' : ' Replay the night.');
   $('endstars').textContent = me ? '' : '★'.repeat(r.stars) + '☆'.repeat(3 - r.stars);
+  ($('end').querySelector('.questions') as HTMLElement).hidden = !!me;
   $('replay').hidden = online;
   $('newnight').hidden = online;
   $('tolobby').hidden = !online;
@@ -582,8 +635,15 @@ function frame(now: number) {
       g.moveMonster(vx, vz, dt);
     }
     if (!S.net) {
+      if (me && !S.placed && me.entered) {
+        // Look the way you came in facing.
+        S.world.look.yaw = Math.atan2(-Math.cos(me.heading), -Math.sin(me.heading));
+        S.placed = true;
+      }
+      S.ai?.update(dt);
       g.update(dt);
-      if (g.over) showEnd();
+      if (me && (me.caught || me.escaped)) soloOut(me);
+      else if (g.over) showEnd();
     }
   } else if (mode === 'catching') {
     catchT -= dt;
@@ -605,8 +665,8 @@ function frame(now: number) {
       else S.net.send({ t: 'pos', x: g.monster.x, z: g.monster.z, yaw: g.monster.yaw, pitch: g.monster.pitch });
     }
     if (me && !S.spectating && me.entered && (me.caught || me.escaped)) spectate(me.caught ? 'taken' : 'escaped');
-    if (me && !S.spectating) S.sound.heartbeat(Math.max(0, (me.fear - 25) / 75));
   }
+  if (me && !S.spectating && mode !== 'over') S.sound.heartbeat(Math.max(0, (me.fear - 25) / 75));
 
   S.world.update(t, mode === 'catching' && S.role === 'monster' ? 1 : g.monster.seen && S.role === 'monster' ? 0.25 : 0);
   S.sound.update((i) => S.world.circuitLevel(i, t));

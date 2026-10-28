@@ -59,8 +59,26 @@
 
     <div class="overlay" id="title">
       <h1>HUM</h1>
-      <p class="pitch">You are the thing in the Backrooms. Feed on their fear before they find an exit.</p>
-      <div class="cols">
+      <div class="pick" role="radiogroup" aria-label="Play as">
+        <button data-as="monster" role="radio">The monster</button>
+        <button data-as="human" role="radio">A human</button>
+      </div>
+      <p class="pitch as-monster">You are the thing in the Backrooms. Feed on their fear before they find an exit.</p>
+      <p class="pitch as-human">You leaned on the wrong wall and fell through. Something else lives here. Find an exit before it finds you.</p>
+      <div class="cols as-human">
+        <ul>
+          <li><kbd>WASD</kbd> move · <kbd>Mouse</kbd> look</li>
+          <li><kbd>Shift</kbd> sprint · <kbd>C</kbd> crouch</li>
+          <li><kbd>F</kbd> flashlight · <kbd>E</kbd> draw a chalk arrow</li>
+        </ul>
+        <ul class="rules">
+          <li>Exit signs glow, even in the dark.</li>
+          <li>It hears footsteps and breathing. Crouch in the dark to go quiet.</li>
+          <li>Hold your light on it and it backs off, but the battery won't last.</li>
+          <li>The walls move when you aren't looking. So do your arrows.</li>
+        </ul>
+      </div>
+      <div class="cols as-monster">
         <ul>
           <li><kbd>WASD</kbd> move · <kbd>Mouse</kbd> look</li>
           <li><kbd>Click</kbd> catch a wanderer in reach</li>

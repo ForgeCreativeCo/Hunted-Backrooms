@@ -796,7 +796,7 @@ export class Game {
 
   // ---- Monster actions ----
 
-  moveMonster(vx: number, vz: number, dt: number) {
+  moveMonster(vx: number, vz: number, dt: number, pace = 1) {
     const m = this.monster;
     const L = this.level;
     const len = Math.hypot(vx, vz);
@@ -804,7 +804,7 @@ export class Game {
     if (!m.moving) return;
     const seeping = m.seepT > 0;
     // A flashlight beam slows the monster to half speed.
-    const speed = (seeping ? CFG.SEEP_SPEED : CFG.MONSTER_SPEED) * (this.inAnyBeam(m.x, m.z) ? 0.5 : 1);
+    const speed = (seeping ? CFG.SEEP_SPEED : CFG.MONSTER_SPEED) * pace * (this.inAnyBeam(m.x, m.z) ? 0.5 : 1);
     m.x += (vx / len) * speed * dt;
     m.z += (vz / len) * speed * dt;
     const r = CFG.MONSTER_RADIUS;

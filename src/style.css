@@ -110,6 +110,14 @@ h2 { font-size: 36px; letter-spacing: 0.25em; font-weight: 300; margin: 0 0 12px
 .pitch { color: var(--dim); max-width: 560px; }
 .cols { display: flex; gap: 40px; flex-wrap: wrap; justify-content: center; margin: 18px 0; text-align: left; }
 .cols ul { list-style: none; padding: 0; margin: 0; line-height: 2; font-size: 14px; }
+.pick { display: flex; margin: 18px 0 6px; }
+.pick button { border-radius: 0; color: var(--dim); }
+.pick button:first-child { border-radius: 4px 0 0 4px; }
+.pick button:last-child { border-radius: 0 4px 4px 0; border-left: none; }
+.pick button.on { color: var(--fg); border-color: var(--fg); background: rgba(232, 223, 192, 0.08); }
+.pick button.on + button { border-left: none; }
+.pick button + button.on { border-left: 1px solid var(--fg); }
+body.solo-human #title .as-monster, body.solo-monster #title .as-human { display: none; }
 .rules li::before { content: '— '; color: var(--dim); }
 .go { font-size: 18px; animation: blink 1.6s infinite; margin-top: 18px; }
 .seed { color: var(--dim); font-size: 12px; }
