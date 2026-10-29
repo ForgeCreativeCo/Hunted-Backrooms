@@ -70,7 +70,7 @@ export class SenseView {
     for (let c = 0; c < L.cells; c++) {
       const lvl = circuitLevel(L.circuit[c]);
       ctx.fillStyle = lvl > 0.5 ? 'rgba(190,165,80,0.10)' : 'rgba(40,60,110,0.10)';
-      if (L.circuit[c] === hoverCircuit) ctx.fillStyle = g.blackout[hoverCircuit] > 0 ? 'rgba(120,120,120,0.18)' : 'rgba(255,70,50,0.22)';
+      if (L.circuit[c] === hoverCircuit) ctx.fillStyle = g.blackout[hoverCircuit] > 0 || L.dead[hoverCircuit] ? 'rgba(120,120,120,0.18)' : 'rgba(255,70,50,0.22)';
       ctx.fillRect(this.sx(L.cx(c) * CS) + 1, this.sy(L.cy(c) * CS) + 1, CS * s - 2, CS * s - 2);
     }
 
@@ -92,6 +92,9 @@ export class SenseView {
     ctx.strokeStyle = 'rgba(170,160,140,0.28)';
     ctx.lineWidth = 1;
     for (const b of L.solids) ctx.strokeRect(this.sx(b.x0), this.sy(b.z0), (b.x1 - b.x0) * s, (b.z1 - b.z0) * s);
+    // The Pitfalls' holes, as black as they are.
+    ctx.fillStyle = '#000';
+    for (const { hole: b } of L.pits) ctx.fillRect(this.sx(b.x0), this.sy(b.z0), (b.x1 - b.x0) * s, (b.z1 - b.z0) * s);
 
     // Doors: doorways in brown, doors to nowhere as small ticks, portals in violet with their links.
     for (const d of L.doors) {
@@ -252,7 +255,7 @@ export class SenseView {
         this.tooltip(err ?? (L.isWall(key) ? `Open this wall · ${CFG.SHIFT_COST} dread` : `Wall off this gap · ${CFG.SHIFT_COST} dread`), !err);
       }
     } else if (aim === 'blackout' && hoverCircuit >= 0) {
-      const err = g.blackout[hoverCircuit] > 0 ? 'Already dark' : g.dread < CFG.BLACKOUT_COST ? 'Not enough dread' : null;
+      const err = g.blackout[hoverCircuit] > 0 || L.dead[hoverCircuit] ? 'Already dark' : g.dread < CFG.BLACKOUT_COST ? 'Not enough dread' : null;
       this.tooltip(err ?? `Blackout this circuit · ${CFG.BLACKOUT_COST} dread`, !err);
     }
   }

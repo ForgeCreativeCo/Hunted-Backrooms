@@ -22,9 +22,14 @@ To play with people on other machines, use the production server below: it serve
 
 Every night is generated from its seed, so online players all walk the same building.
 
+- Most of Level 0 is bare: the same wallpaper, damp carpet and buzzing lights for ever. The furniture gathers in three pockets, with only the odd stray thing elsewhere.
+- One region never had power. Its lights are dead and silent all night; the monster sees there in night vision, and its Blackout does nothing.
+- The Pitfalls: a region of darker, soaked carpet with holes in the floor that drop away into black. You can stand at the lip but not cross.
+- The Manila Room: one room walled in with as few ways in as the level allows, its wallpaper gone red.
+
 - Rooms come in odd sizes: endless one-cell halls, huge pillared halls, closets. Some ceilings are cramped; some rise far higher than the building around them could allow.
 - Doors open when you walk into them, and close themselves when nobody is watching. Doorway doors lead on. Doors hung on walls mostly lead nowhere: bricks, a black void, another door, or a door too high to reach. A few pairs of tall doors open onto the dark and carry you to their partner somewhere else in the level.
-- Furniture is everywhere it shouldn't be: toppled office chairs, chairs stuck to the ceiling, circles of chairs facing nothing, chairs stacked into the ceiling, desks fused into walls, dinner set for nobody, CRTs glowing at the wall, mannequins, stairs that climb into the ceiling. Somewhere, an old phone rings.
+- Where there is furniture, it's wrong: toppled office chairs, chairs stuck to the ceiling, circles of chairs facing nothing, chairs stacked into the ceiling, desks fused into walls, dinner set for nobody, CRTs glowing at the wall, mannequins, stairs that climb into the ceiling. Somewhere, an old phone rings.
 
 ## Multiplayer
 

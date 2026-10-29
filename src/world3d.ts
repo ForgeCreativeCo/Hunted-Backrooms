@@ -7,7 +7,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { CFG } from './config';
 import { Creature } from './creature';
 import { Game } from './game';
-import type { Door } from './level';
+import { MAX_PITS, Zone, type Door } from './level';
 import { Person } from './person';
 import { buildProps, PropMat } from './props';
 import { hashString } from './rng';
@@ -169,6 +169,17 @@ type Surf = 'FLOOR' | 'WALL' | 'CEIL' | 'TRIM' | 'PROP';
 const cellLight = { tex: { value: null as THREE.Texture | null }, size: { value: new THREE.Vector2(1, 1) } };
 
 /**
+ * The Manila Room's cells as a second, unfiltered texture (r), so its walls
+ * turn red right up to the corners; and the holes the floor leaves out. The
+ * Pitfalls' carpet rides in the light texture's g, where filtering softens its edge.
+ */
+const zoneLook = {
+  tex: { value: null as THREE.Texture | null },
+  pits: { value: Array.from({ length: MAX_PITS }, () => new THREE.Vector4()) },
+  pitCount: { value: 0 },
+};
+
+/**
  * Standard material patched with per-instance light level (aBright: ambient
  * only reaches lit circuits), contact shadows where floor meets wall (aWalls),
  * and world-space grime so no two stretches of wall look the same.
@@ -181,6 +192,9 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
     sh.uniforms.uGrime = { value: grime };
     sh.uniforms.uCellTex = cellLight.tex;
     sh.uniforms.uMapSize = cellLight.size;
+    sh.uniforms.uZoneTex = zoneLook.tex;
+    sh.uniforms.uPits = zoneLook.pits;
+    sh.uniforms.uPitCount = zoneLook.pitCount;
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', `#include <common>
         attribute float aBright;
@@ -188,25 +202,33 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
         varying float hBright;
         varying float hWalls;
         varying vec3 hW;
-        varying vec3 hL;`)
+        varying vec3 hL;
+        varying vec3 hN;`)
       .replace('#include <project_vertex>', `#include <project_vertex>
         hBright = aBright;
         hWalls = aWalls;
         hL = transformed;
         vec4 hw4 = vec4(transformed, 1.0);
+        vec3 hn = objectNormal;
         #ifdef USE_INSTANCING
           hw4 = instanceMatrix * hw4;
+          hn = mat3(instanceMatrix) * hn;
         #endif
-        hW = (modelMatrix * hw4).xyz;`);
+        hW = (modelMatrix * hw4).xyz;
+        hN = mat3(modelMatrix) * hn;`);
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>
         uniform sampler2D uGrime;
         uniform sampler2D uCellTex;
         uniform vec2 uMapSize;
+        uniform sampler2D uZoneTex;
+        uniform vec4 uPits[${MAX_PITS}];
+        uniform int uPitCount;
         varying float hBright;
         varying float hWalls;
         varying vec3 hW;
         varying vec3 hL;
+        varying vec3 hN;
         float hEdge(float d) { return mix(0.42, 1.0, smoothstep(0.0, 0.75, d)); }
         float hAO() {
           int m = int(hWalls + 0.5);
@@ -229,10 +251,18 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
           diffuseColor.rgb *= 0.82 + 0.3 * texture2D(uGrime, hW.xz * 0.4 + hW.y * 0.25).g;
         #endif
         #ifdef SURF_FLOOR
+          for (int i = 0; i < ${MAX_PITS}; i++) {
+            if (i >= uPitCount) break;
+            vec4 p = uPits[i];
+            if (hW.x > p.x && hW.x < p.z && hW.z > p.y && hW.z < p.w) discard;
+          }
           float n1 = texture2D(uGrime, hW.xz * 0.03).r;
           float n2 = texture2D(uGrime, hW.xz * 0.19).g;
           hWet = smoothstep(0.58, 0.68, n1 * 0.75 + n2 * 0.25);
           diffuseColor.rgb *= (0.8 + 0.4 * n2) * mix(1.0, 0.45, hWet);
+          // The Pitfalls' carpet: darker and browner, as if soaked through.
+          float pitfall = texture2D(uCellTex, hW.xz / uMapSize).g;
+          diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.42, 0.36, 0.28), pitfall);
           diffuseColor.rgb *= hAO();
         #endif
         #ifdef SURF_WALL
@@ -248,6 +278,11 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
           diffuseColor.rgb *= 0.9 + 0.2 * mottle;
           diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.55, 0.44, 0.26), clamp(damp * 0.85 + drip, 0.0, 1.0));
           diffuseColor.rgb *= mix(0.5, 1.0, smoothstep(0.0, 0.5, wy)) * mix(0.7, 1.0, smoothstep(0.0, 0.4, topH - wy));
+          // The Manila Room: the same wallpaper, gone red. Looked up a little way
+          // in front of the face, so each side of a wall takes its own room's colour.
+          float manila = texture2D(uZoneTex, (hW.xz + normalize(hN).xz * 1.4) / uMapSize).r;
+          float wl = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
+          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(wl * 1.55, wl * 0.32, wl * 0.26), manila);
         #endif
         #ifdef SURF_CEIL
           vec2 tile = floor(hW.xz / 0.75);
@@ -360,9 +395,20 @@ export class World3D {
     const CS = L.CS, H = CFG.WALL_H;
     this.cellTex = new THREE.DataTexture(new Uint8Array(L.W * L.H * 4).fill(255), L.W, L.H);
     this.cellTex.magFilter = this.cellTex.minFilter = THREE.LinearFilter;
+    const zoneData = new Uint8Array(L.W * L.H * 4);
+    for (let c = 0; c < L.cells; c++) {
+      (this.cellTex.image.data as Uint8Array)[c * 4 + 1] = L.zone[c] === Zone.Pitfalls ? 255 : 0;
+      zoneData[c * 4] = L.zone[c] === Zone.Manila ? 255 : 0;
+    }
     this.cellTex.needsUpdate = true;
     cellLight.tex.value = this.cellTex;
     cellLight.size.value.set(L.W * CS, L.H * CS);
+    const zoneTex = new THREE.DataTexture(zoneData, L.W, L.H);
+    zoneTex.magFilter = zoneTex.minFilter = THREE.NearestFilter;
+    zoneTex.needsUpdate = true;
+    zoneLook.tex.value = zoneTex;
+    L.pits.forEach(({ hole }, i) => zoneLook.pits.value[i].set(hole.x0, hole.z0, hole.x1, hole.z1));
+    zoneLook.pitCount.value = L.pits.length;
     const grime = T.grime();
     const paper = T.wallpaper(), carpet = T.carpet(), tiles = T.ceiling();
 
@@ -465,6 +511,7 @@ export class World3D {
     });
     this.scene.add(this.pillars);
 
+    this.buildPits(grime);
     this.buildExits();
     this.buildDoors(grime);
     this.buildFurniture(grime);
@@ -514,6 +561,47 @@ export class World3D {
     this.setFootageRes();
 
     this.rebuildWalls();
+  }
+
+  /** The Pitfalls' shafts: carpet-edged walls that drop away into black, with no bottom you can see. */
+  private buildPits(grime: THREE.Texture) {
+    const L = this.game.level;
+    if (!L.pits.length) return;
+    const DEPTH = 14, FADE = 1.1;
+    const pos: number[] = [], col: number[] = [], nrm: number[] = [];
+    const top = [0.2, 0.16, 0.1];
+    // One inward-facing quad from y0 down to y1 along a → b, coloured c0 at the top and c1 at the bottom.
+    const quad = (ax: number, az: number, bx: number, bz: number, nx: number, nz: number, y0: number, y1: number, c0: number[], c1: number[]) => {
+      const v = [[ax, y0, az, c0], [bx, y0, bz, c0], [bx, y1, bz, c1], [ax, y0, az, c0], [bx, y1, bz, c1], [ax, y1, az, c1]] as const;
+      for (const [x, y, z, c] of v) { pos.push(x, y, z); col.push(...c); nrm.push(nx, 0, nz); }
+    };
+    const black = [0, 0, 0];
+    for (const { hole: h } of L.pits) {
+      const sides = [
+        [h.x0, h.z0, h.x1, h.z0, 0, 1], [h.x1, h.z0, h.x1, h.z1, -1, 0],
+        [h.x1, h.z1, h.x0, h.z1, 0, -1], [h.x0, h.z1, h.x0, h.z0, 1, 0],
+      ];
+      // Wind each side so its front faces into the shaft.
+      for (const [ax, az, bx, bz, nx, nz] of sides) {
+        const flip = (bx - ax) * nz - (bz - az) * nx > 0;
+        const [px, pz, qx, qz] = flip ? [bx, bz, ax, az] : [ax, az, bx, bz];
+        quad(px, pz, qx, qz, nx, nz, 0, -FADE, top, black);
+        quad(px, pz, qx, qz, nx, nz, -FADE, -DEPTH, black, black);
+      }
+      // A black floor far down, so nothing behind the level shows through.
+      for (const [x, z] of [[h.x0, h.z0], [h.x0, h.z1], [h.x1, h.z1], [h.x0, h.z0], [h.x1, h.z1], [h.x1, h.z0]]) {
+        pos.push(x, -DEPTH, z); col.push(0, 0, 0); nrm.push(0, 1, 0);
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    const mat = surface('PROP', { vertexColors: true, roughness: 1 }, grime);
+    mat.fog = false;
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.frustumCulled = false;
+    this.scene.add(mesh);
   }
 
   private buildExits() {
@@ -720,6 +808,7 @@ export class World3D {
 
   /** Flickering brightness per circuit, from the game's blackout timers. */
   circuitLevel(i: number, t: number): number {
+    if (this.game.level.dead[i]) return 0;
     const b = this.game.blackout[i];
     if (b <= 0) return 1;
     const sinceStart = CFG.BLACKOUT_TIME - b;
@@ -809,8 +898,9 @@ export class World3D {
     const here = this.cellBright[L.cellAt(vx, vz)];
     // Night vision follows the blackout timer, not the flickering light level,
     // so it switches once: after the lights die, and off as they stutter back.
-    const b = g.blackout[L.circuit[L.cellAt(m.x, m.z)]];
-    const nvTarget = !human && b > 0.9 && b < CFG.BLACKOUT_TIME - 0.5;
+    const mc = L.circuit[L.cellAt(m.x, m.z)];
+    const b = g.blackout[mc];
+    const nvTarget = !human && (L.dead[mc] === 1 || (b > 0.9 && b < CFG.BLACKOUT_TIME - 0.5));
     if (nvTarget !== this.nvOn) {
       this.nvOn = nvTarget;
       if (nvTarget) this.nvFlash = 1;

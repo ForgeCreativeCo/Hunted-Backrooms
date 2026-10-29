@@ -70,6 +70,16 @@ export interface Box {
 }
 
 /**
+ * What a stretch of Level 0 is like. Most of it is bare: the same wallpaper,
+ * carpet and lights for ever. Furniture gathers in a few pockets; one region
+ * has no power at all; one has holes in its darker carpet; one room is red.
+ */
+export enum Zone { Bare, Furnished, Dark, Pitfalls, Manila }
+
+/** The floor shader cuts this many holes at most. */
+export const MAX_PITS = 48;
+
+/**
  * The level is a grid of cells. Walls are edges between cells, stored as one
  * flat key space: horizontal edges first (north side of each cell, plus the
  * south border), then vertical edges (west side of each cell, plus the east border).
@@ -88,6 +98,11 @@ export class Level {
   circuitCells: number[][] = [];
   circuitCenter: { x: number; z: number }[] = [];
   panel: Uint8Array;
+  zone: Uint8Array;
+  /** Circuits that never had power: their lights are dead all night. */
+  dead: Uint8Array = new Uint8Array(0);
+  /** Holes in the floor of the Pitfalls: `hole` is what's drawn, `solid` what stops a body (a little inside it, so you can stand at the lip). */
+  pits: { hole: Box; solid: Box }[] = [];
   exits: Exit[] = [];
   exitCells = new Set<number>();
   spawnCell = 0;
@@ -111,7 +126,8 @@ export class Level {
     this.circuit = new Int16Array(this.cells);
     this.panel = new Uint8Array(this.cells);
     this.ceil = new Float32Array(this.cells).fill(CFG.WALL_H);
-    this.generate(new RNG(seed));
+    this.zone = new Uint8Array(this.cells);
+    this.generate(new RNG(seed), new RNG(seed + ':zones'));
     this.furnish(new RNG(seed + ':furnish'));
   }
 
@@ -313,8 +329,9 @@ export class Level {
 
   // ---- Generation ----
 
-  private generate(rng: RNG) {
+  private generate(rng: RNG, zr: RNG) {
     const { W, H } = this;
+    const carved: { x: number; y: number; w: number; h: number }[] = [];
 
     // 1. A perfect maze, so everything starts connected.
     const seen = new Uint8Array(this.cells);
@@ -349,6 +366,7 @@ export class Level {
       const rx = rng.int(0, W - rw), ry = rng.int(0, H - rh);
       const hr = rng.next();
       const height = hr < 0.14 ? 2.3 : hr < 0.32 ? rng.range(4.2, 8.5) : CFG.WALL_H;
+      if (rw > 1 && rh > 1 && rw <= 6 && rh <= 5) carved.push({ x: rx, y: ry, w: rw, h: rh });
       for (let y = ry; y < ry + rh; y++) {
         for (let x = rx; x < rx + rw; x++) {
           const c = this.cell(x, y);
@@ -362,6 +380,32 @@ export class Level {
     // 3. Knock out some walls so there are loops, but keep plenty of dead ends.
     for (let k = 0; k < this.edgeCount; k++) {
       if (this.walls[k] && !this.isBorder(k) && rng.chance(0.22)) this.walls[k] = 0;
+    }
+
+    // 3b. The Manila Room: one ordinary room, walled in again with as few ways in
+    // as still keep the level connected, and red where everything else is yellow.
+    if (carved.length) {
+      const r = zr.pick(carved);
+      const boundary: number[] = [];
+      for (let y = r.y; y < r.y + r.h; y++) {
+        for (let x = r.x; x < r.x + r.w; x++) {
+          const c = this.cell(x, y);
+          this.zone[c] = Zone.Manila;
+          this.ceil[c] = CFG.WALL_H;
+          for (let d = 0; d < 4; d++) {
+            const n = this.neighbor(c, d);
+            if (n < 0) continue;
+            const nx = this.cx(n), ny = this.cy(n);
+            const inside = nx >= r.x && nx < r.x + r.w && ny >= r.y && ny < r.y + r.h;
+            if (!inside && !this.walls[this.edgeOf(c, d)]) boundary.push(this.edgeOf(c, d));
+          }
+        }
+      }
+      for (const k of boundary) this.walls[k] = 1;
+      for (const k of zr.shuffle(boundary)) {
+        if (this.connected()) break;
+        this.walls[k] = 0;
+      }
     }
 
     // 4. Pillars at grid corners where all four meeting edges are open.
@@ -440,6 +484,18 @@ export class Level {
     const candidates: number[] = [];
     for (let c = 0; c < this.cells; c++) if (fromSpawn[c] >= 8 && fromSpawn[c] <= 13) candidates.push(c);
     this.monsterCell = candidates.length ? rng.pick(candidates) : (spawn + this.cells / 2) % this.cells;
+
+    // 9. Zones, a circuit at a time. Nobody noclips into the dark or the pits.
+    this.dead = new Uint8Array(this.circuitCount);
+    const circuits = zr.shuffle(Array.from({ length: this.circuitCount }, (_, i) => i))
+      .filter((i) => i !== this.circuit[spawn]);
+    const kinds = [Zone.Dark, Zone.Pitfalls, Zone.Furnished, Zone.Furnished, Zone.Furnished];
+    kinds.forEach((z, j) => {
+      const i = circuits[j];
+      if (i === undefined) return;
+      if (z === Zone.Dark) this.dead[i] = 1;
+      for (const c of this.circuitCells[i]) if (this.zone[c] !== Zone.Manila) this.zone[c] = z;
+    });
   }
 
   // ---- Doors and debris ----
@@ -582,8 +638,31 @@ export class Level {
       });
     }
 
-    // Debris and furniture.
-    const prop = (p: Partial<Prop> & { type: PropType; x: number; z: number }) => {
+    // Holes in the floor of the Pitfalls, each tucked into a corner of its cell so
+    // the straight walk between cell centres always stays clear.
+    const pitCell = new Uint8Array(this.cells);
+    for (let c = 0; c < this.cells; c++) {
+      if (this.pits.length >= MAX_PITS) break;
+      if (this.zone[c] !== Zone.Pitfalls || doorCell[c] || this.exitCells.has(c) || c === this.spawnCell || !rng.chance(0.45)) continue;
+      const sx = rng.chance(0.5) ? 1 : -1, sz = rng.chance(0.5) ? 1 : -1;
+      const w = rng.range(0.75, 1.05), d = rng.range(0.75, 1.05);
+      const p = this.center(c);
+      if (this.pillars.some((q) => q.x === p.x + sx * CS / 2 && q.z === p.z + sz * CS / 2)) continue;
+      const ex = p.x + sx * (CS / 2 - 0.1), ez = p.z + sz * (CS / 2 - 0.1); // the corner, just off the walls
+      const hole = { x0: Math.min(ex, ex - sx * w), z0: Math.min(ez, ez - sz * d), x1: Math.max(ex, ex - sx * w), z1: Math.max(ez, ez - sz * d) };
+      const lip = 0.12;
+      const solid = { x0: hole.x0 + lip, z0: hole.z0 + lip, x1: hole.x1 - lip, z1: hole.z1 - lip };
+      this.pits.push({ hole, solid });
+      this.addSolid(solid);
+      pitCell[c] = 1;
+    }
+
+    // Debris and furniture: thick in the furnished pockets, a rare thing anywhere else.
+    const density = (c: number) => {
+      const z = this.zone[c];
+      return z === Zone.Furnished ? 1 : z === Zone.Manila || pitCell[c] ? 0 : 0.12;
+    };
+    const prop =(p: Partial<Prop> & { type: PropType; x: number; z: number }) => {
       const full: Prop = { y: 0, ry: 0, rx: 0, rz: 0, ceil: false, cell: this.cellAt(p.x, p.z), v: 0, ...p };
       this.props.push(full);
       return full;
@@ -598,9 +677,10 @@ export class Level {
       if (this.exitCells.has(c)) continue;
       const cx = (this.cx(c) + 0.5) * CS, cz = (this.cy(c) + 0.5) * CS;
       const wallDirs = [0, 1, 2, 3].filter((d) => !this.open(c, d) && !this.doorOnEdge.has(this.edgeOf(c, d)));
+      const k = density(c);
 
       // Something against a wall.
-      if (wallDirs.length && rng.chance(0.24)) {
+      if (wallDirs.length && rng.chance(0.24 * k)) {
         const d = rng.pick(wallDirs);
         const nx = -DX[d], nz = -DY[d]; // into the cell
         const tx = Math.abs(nz), tz = Math.abs(nx);
@@ -655,7 +735,7 @@ export class Level {
       }
 
       // Furniture stuck to the ceiling, upside down.
-      if (rng.chance(0.05)) {
+      if (rng.chance(0.05 * k)) {
         prop({
           type: rng.chance(0.6) ? 'chair' : 'desk', x: cx + rng.range(-0.8, 0.8), z: cz + rng.range(-0.8, 0.8),
           y: this.ceil[c], ry: rng.range(0, Math.PI * 2), ceil: true,
@@ -663,7 +743,7 @@ export class Level {
       }
 
       // Paper everywhere.
-      if (rng.chance(0.3)) {
+      if (rng.chance(0.3 * (k ? Math.max(k, 0.25) : 0))) {
         for (let i = rng.int(1, 5); i > 0; i--) {
           prop({ type: 'paper', x: cx + rng.range(-1.3, 1.3), z: cz + rng.range(-1.3, 1.3), ry: rng.range(0, Math.PI * 2), y: 0.004 + i * 0.001 });
         }
@@ -675,7 +755,7 @@ export class Level {
       for (let vx = 1; vx < W; vx++) {
         if (this.vertexWalls(vx, vy, -1)) continue;
         const cells = [this.cell(vx - 1, vy - 1), this.cell(vx, vy - 1), this.cell(vx - 1, vy), this.cell(vx, vy)];
-        if (cells.some((c) => this.exitCells.has(c) || doorCell[c])) continue;
+        if (cells.some((c) => this.exitCells.has(c) || doorCell[c] || this.zone[c] !== Zone.Furnished)) continue;
         const x = vx * CS, z = vy * CS;
         if (this.pillars.some((p) => p.x === x && p.z === z)) continue;
         const ch = Math.min(...cells.map((c) => this.ceil[c]));

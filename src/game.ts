@@ -179,7 +179,10 @@ export class Game {
   get over() { return this.result !== null; }
   get timeLeft() { return Math.max(0, CFG.NIGHT_SECONDS - this.t); }
 
-  isLit(cell: number) { return this.blackout[this.level.circuit[cell]] <= 0; }
+  isLit(cell: number) {
+    const i = this.level.circuit[cell];
+    return this.blackout[i] <= 0 && !this.level.dead[i];
+  }
 
   fearMult(w: Wanderer) { return w.player ? 1 : CFG.FEAR_MULT[w.kind]; }
 
@@ -862,7 +865,7 @@ export class Game {
 
   tryBlackout(circuit: number): string | null {
     if (circuit < 0) return 'No circuit there';
-    if (this.blackout[circuit] > 0) return 'That circuit is already dark';
+    if (this.blackout[circuit] > 0 || this.level.dead[circuit]) return 'That circuit is already dark';
     const beam = this.beamBlocks();
     if (beam) return beam;
     if (this.dread < CFG.BLACKOUT_COST) return 'Not enough dread';
