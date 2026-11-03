@@ -121,7 +121,7 @@ export class Level {
   /** Bumped whenever a wall changes, so cached paths know to re-plan. */
   version = 0;
 
-  constructor(seed: string) {
+  constructor(readonly seed: string) {
     this.walls = new Uint8Array(this.edgeCount).fill(1);
     this.circuit = new Int16Array(this.cells);
     this.panel = new Uint8Array(this.cells);

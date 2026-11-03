@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { Game, Wanderer } from './game';
+import { RNG } from './rng';
 
 // Recorded clips for the big moments (public/audio), synthesized sound for the rest.
 // Positional where it matters, because sound is a mechanic.
@@ -13,6 +14,13 @@ const TERROR_VOL = 0.5;
 const TERROR_NEAR = 6; // metres from the speaker where it's gone
 const TERROR_FAR = 30; // and where it's at full volume
 const ROARS = [[0, 2.1], [2.9, 2.2], [5.4, 1.6], [9.4, 2.2], [12.4, 1.6]];
+// The PA plays one of these all night, picked from the level seed so everyone in a room hears
+// the same one. Loops from `start` to `tail` seconds before the end, skipping the fade-in and fade-out.
+const TRACKS = [
+  { file: 'music', start: 2, tail: 15 },
+  { file: 'lobby-melody', start: 0, tail: 5 },
+  { file: 'uneasy-jaunt', start: 0, tail: 5 },
+];
 
 export class Sound {
   listener = new THREE.AudioListener();
@@ -35,11 +43,13 @@ export class Sound {
   private breathUntil = new Map<number, number>();
   private camera: THREE.Camera;
   private pa: { x: number; z: number; y: number };
+  private track: (typeof TRACKS)[number];
 
   constructor(game: Game, camera: THREE.Camera, scene: THREE.Scene) {
     camera.add(this.listener);
     this.camera = camera;
     this.pa = game.level.pa;
+    this.track = TRACKS[new RNG(game.level.seed + ':music').int(TRACKS.length)];
     this.ctx = this.listener.context;
     this.master = this.ctx.createGain();
     this.master.gain.value = 0.9;
@@ -84,7 +94,7 @@ export class Sound {
     }
 
     for (const name of CLIPS) {
-      fetch(`audio/${name}.mp3`)
+      fetch(`audio/${name === 'music' ? this.track.file : name}.mp3`)
         .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(r.status)))
         .then((b) => this.ctx.decodeAudioData(b))
         .then((buf) => {
@@ -163,8 +173,8 @@ export class Sound {
     const src = ctx.createBufferSource();
     src.buffer = buf;
     src.loop = true;
-    src.loopStart = 2;
-    src.loopEnd = buf.duration - 15; // skip the fade-out at the end
+    src.loopStart = this.track.start;
+    src.loopEnd = buf.duration - this.track.tail;
     src.playbackRate.value = 0.93; // a little slow, and so a little flat
 
     // Tape-like wow and flutter, plus a slow drift, so it never sits in tune.
@@ -245,7 +255,7 @@ export class Sound {
     speaker.positionY.value = this.pa.y - 0.5;
     speaker.positionZ.value = this.pa.z;
     level.connect(speaker).connect(this.master);
-    src.start(now, 2);
+    src.start(now, this.track.start);
 
     // Line hiss under it.
     const hiss = ctx.createBufferSource();
