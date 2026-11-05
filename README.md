@@ -57,6 +57,14 @@ On a phone or tablet the game switches to on-screen controls (a touchscreen lapt
 - Buttons: Crouch, Chalk and Light for humans; Take, Blackout, Shift, Seep, Erase, Redraw and Map for the monster. On the map, press Blackout or Shift and then tap where to use it.
 - ❚❚ at the top pauses.
 
+## Installing
+
+The built game is a progressive web app: browsers offer to install it (Chrome and Edge show an install button in the address bar; on a phone, use Add to Home Screen). Installed, it opens fullscreen and in landscape, and solo nights work offline once the game has been opened once online.
+
+- `public/manifest.webmanifest` sets the app's id to `/forgecreativeco.hum-a-backroom-story`, so an install of HUM never takes the place of another web game installed from the same site.
+- `public/sw.js` is the service worker. It only runs in built copies (`npm run build`), not in `npm run dev`. Its caches are named `forgecreativeco.hum.*`. The page always loads fresh when online, so a new deploy shows up on the next launch. Multiplayer always needs a connection.
+- `npx tsx scripts/icons.ts` redraws the icons in `public/icons`.
+
 ## Hosting online
 
 ```bash

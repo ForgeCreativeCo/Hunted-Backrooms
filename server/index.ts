@@ -59,6 +59,8 @@ const MIME: Record<string, string> = {
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
   '.json': 'application/json',
+  '.webmanifest': 'application/manifest+json',
+  '.ico': 'image/x-icon',
 };
 
 const http = createServer(async (req, res) => {
