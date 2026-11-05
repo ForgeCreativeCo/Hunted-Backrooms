@@ -2,7 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
     <title>HUM: A Backroom Story</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -57,6 +60,28 @@
       <div id="spectate" hidden></div>
     </div>
 
+    <!-- Touch controls: drag on the left to move, on the right to look. -->
+    <div id="touch" hidden>
+      <div id="stick" hidden><div id="knob"></div></div>
+      <button class="tb" id="t-pause" aria-label="Pause">❚❚</button>
+      <div id="tbtns">
+        <div class="tgroup human-only">
+          <button class="tb" data-key="KeyC" id="tb-crouch">Crouch</button>
+          <button class="tb" data-key="KeyE">Chalk</button>
+          <button class="tb big" data-key="KeyF" id="tb-flash">Light</button>
+        </div>
+        <div class="tgroup monster-only">
+          <button class="tb" data-key="KeyE">Erase</button>
+          <button class="tb" data-key="KeyR">Redraw</button>
+          <button class="tb" data-key="Tab" id="tb-view">Map</button>
+          <button class="tb" data-key="Digit1" id="tb-blackout">Blackout</button>
+          <button class="tb" data-key="Digit2" id="tb-shift">Shift</button>
+          <button class="tb" data-key="KeyQ" id="tb-seep">Seep</button>
+          <button class="tb big hunt-only" data-key="catch" id="tb-catch">Take</button>
+        </div>
+      </div>
+    </div>
+
     <div class="overlay" id="title">
       <h1>HUM<span class="subtitle">A Backroom Story</span></h1>
       <div class="pick" role="radiogroup" aria-label="Play as">
@@ -66,7 +91,12 @@
       <p class="pitch as-monster">You are the thing in the Backrooms. Feed on their fear before they find an exit.</p>
       <p class="pitch as-human">You leaned on the wrong wall and fell through. Something else lives here. Find an exit before it finds you.</p>
       <div class="cols as-human">
-        <ul>
+        <ul class="touch-only">
+          <li>Left thumb: move · push to the edge to sprint</li>
+          <li>Right thumb: drag to look</li>
+          <li>Buttons: crouch, chalk arrow, flashlight</li>
+        </ul>
+        <ul class="keys-only">
           <li><kbd>WASD</kbd> move · <kbd>Mouse</kbd> look</li>
           <li><kbd>Shift</kbd> sprint · <kbd>C</kbd> crouch</li>
           <li><kbd>F</kbd> flashlight · <kbd>E</kbd> draw a chalk arrow</li>
@@ -79,7 +109,14 @@
         </ul>
       </div>
       <div class="cols as-monster">
-        <ul>
+        <ul class="touch-only">
+          <li>Left thumb: move · Right thumb: drag to look</li>
+          <li>Tap or <b>Take</b> to catch a wanderer in reach</li>
+          <li><b>Map</b> switches to the sense view; tap it to aim</li>
+          <li><b>Blackout</b> a light circuit · <b>Shift</b> a wall</li>
+          <li><b>Seep</b> through walls while unseen</li>
+        </ul>
+        <ul class="keys-only">
           <li><kbd>WASD</kbd> move · <kbd>Mouse</kbd> look</li>
           <li><kbd>Click</kbd> catch a wanderer in reach</li>
           <li><kbd>Tab</kbd> switch hunt / sense view</li>
@@ -132,7 +169,7 @@
 
     <div class="overlay" id="pause" hidden>
       <h2>Paused</h2>
-      <p class="go">Click to resume</p>
+      <p class="go"><span class="keys-only">Click</span><span class="touch-only">Tap</span> to resume</p>
       <label class="toggle"><input type="checkbox" class="opt-footage" /> Found footage look</label>
     </div>
 

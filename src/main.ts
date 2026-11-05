@@ -8,6 +8,7 @@ import { Net } from './net/client';
 import { applySnapshot, NetEvent, Role } from './net/protocol';
 import { randomSeed } from './rng';
 import { Aim, SenseView } from './sense';
+import { isTouchDevice, TouchControls } from './touch';
 import { World3D } from './world3d';
 
 const $ = (id: string) => document.getElementById(id)!;
@@ -133,7 +134,34 @@ let catchT = 0;
 let switchingView = false;
 const keys = new Set<string>();
 
+// Touch: phones and tablets play with on-screen controls instead of pointer lock.
+// A touchscreen laptop switches on its first touch and back on its next mouse click.
+let touchMode = false;
+function setTouchMode(on: boolean) {
+  touchMode = on;
+  document.body.classList.toggle('touch', on);
+}
+setTouchMode(isTouchDevice());
+window.addEventListener('touchstart', () => { if (!touchMode) setTouchMode(true); }, { capture: true, passive: true });
+window.addEventListener('pointerdown', (e) => {
+  if (e.pointerType === 'mouse' && touchMode && !isTouchDevice()) setTouchMode(false);
+}, true);
+// Phones only let sound start inside a tap, and an online night starts on the host's.
+const unlockAudio = () => { if (mode !== 'title' && mode !== 'menu') S.sound.resume(); };
+document.addEventListener('pointerdown', unlockAudio, true);
+document.addEventListener('touchend', unlockAudio, true);
+
+/** On a phone, go fullscreen and sideways when a game is chosen (needs a tap; not every browser allows it). */
+function goFullscreen() {
+  if (!touchMode || document.fullscreenElement) return;
+  const el = document.documentElement;
+  el.requestFullscreen?.({ navigationUI: 'hide' })
+    .then(() => (screen.orientation as unknown as { lock?: (o: string) => Promise<void> }).lock?.('landscape'))
+    .catch(() => {});
+}
+
 function lock() {
+  if (touchMode) return;
   // Can be refused (embedded frames, too soon after Esc); clicking again retries.
   const p = huntCanvas.requestPointerLock?.() as unknown as Promise<void> | undefined;
   p?.catch?.(() => {});
@@ -290,6 +318,7 @@ function netEvent(e: NetEvent) {
 function setView(v: 'hunt' | 'sense') {
   view = v;
   aim = 'none';
+  document.body.classList.toggle('view-sense', v === 'sense');
   senseCanvas.hidden = v !== 'sense';
   $('crosshair').hidden = v !== 'hunt';
   $('prompt').hidden = v !== 'hunt';
@@ -409,10 +438,15 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Tab' && mode !== 'menu') e.preventDefault();
   if (mode !== 'playing' || e.repeat) return;
   keys.add(e.code);
-  if (S.spectating) return;
+  press(e.code);
+});
+
+/** One key's action, from the keyboard or a touch button. */
+function press(code: string) {
+  if (mode !== 'playing' || S.spectating) return;
   if (S.role === 'human') {
     const me = self()!;
-    switch (e.code) {
+    switch (code) {
       case 'KeyF':
         if (S.net) S.net.send({ t: 'act', a: 'flash' });
         else act(S.game.toggleFlash(me));
@@ -425,7 +459,7 @@ window.addEventListener('keydown', (e) => {
     }
     return;
   }
-  switch (e.code) {
+  switch (code) {
     case 'Tab': setView(view === 'hunt' ? 'sense' : 'hunt'); break;
     case 'Digit1': useAbility('blackout'); break;
     case 'Digit2': useAbility('shift'); break;
@@ -434,8 +468,37 @@ window.addEventListener('keydown', (e) => {
     case 'KeyR': simple('redraw'); break;
     case 'Escape': aim = 'none'; break;
   }
-});
+}
 window.addEventListener('keyup', (e) => keys.delete(e.code));
+
+// ---- Touch input ----
+
+const touch = new TouchControls($('touch'), $('stick'), $('knob'));
+touch.onLook = (dx, dy) => {
+  if (mode !== 'playing' || view !== 'hunt' || S.spectating) return;
+  const look = S.role === 'human' ? S.world.look : S.game.monster;
+  look.yaw -= dx * 0.0055;
+  look.pitch = Math.max(-1.3, Math.min(1.3, look.pitch - dy * 0.0055));
+};
+touch.onTap = (x, y) => {
+  if (mode !== 'playing' || S.spectating) return;
+  if (view === 'sense') senseClick(x, y);
+  else if (S.role === 'monster') tryCatch();
+};
+for (const b of document.querySelectorAll<HTMLButtonElement>('#touch [data-key]')) {
+  b.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const k = b.dataset.key!;
+    if (k !== 'catch') press(k);
+    else if (mode === 'playing' && !S.spectating && view === 'hunt') tryCatch();
+  });
+}
+$('t-pause').addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  if (mode === 'playing') pause();
+});
 window.addEventListener('blur', () => keys.clear());
 
 document.addEventListener('mousemove', (e) => {
@@ -468,8 +531,9 @@ window.addEventListener('resize', () => {
 
 // Menus.
 const lobby = new Lobby(startOnline, () => { mode = 'title'; $('title').hidden = false; });
-$('solo').addEventListener('click', startSolo);
+$('solo').addEventListener('click', () => { goFullscreen(); startSolo(); });
 $('multi').addEventListener('click', () => {
+  goFullscreen();
   mode = 'menu';
   $('title').hidden = true;
   lobby.openMenu();
@@ -540,6 +604,9 @@ function updateHud() {
     bar('stamfill', me.stamina);
     bar('battfill', me.battery);
     $('hk-flash').classList.toggle('ready', me.battery > 0);
+    $('tb-flash').classList.toggle('on', me.flash);
+    $('tb-flash').classList.toggle('dim', me.battery <= 0);
+    $('tb-crouch').classList.toggle('on', me.crouch);
     $('prompt').textContent = me.exhausted ? 'Out of breath' : '';
     return;
   }
@@ -562,14 +629,24 @@ function updateHud() {
   const m = g.monster;
   $('ab-seep').classList.toggle('ready', m.seepT > 0 || m.seepCD <= 0);
   $('ab-seep').querySelector('i')!.textContent = m.seepT > 0 ? `${m.seepT.toFixed(1)}s` : m.seepCD > 0 ? `${m.seepCD.toFixed(0)}s` : 'free';
+  if (touchMode) {
+    $('tb-blackout').classList.toggle('dim', g.dread < CFG.BLACKOUT_COST);
+    $('tb-shift').classList.toggle('dim', g.dread < CFG.SHIFT_COST);
+    $('tb-blackout').classList.toggle('on', aim === 'blackout');
+    $('tb-shift').classList.toggle('on', aim === 'shift');
+    $('tb-seep').classList.toggle('dim', !(m.seepT > 0 || m.seepCD <= 0));
+    $('tb-seep').classList.toggle('on', m.seepT > 0);
+    $('tb-view').textContent = view === 'hunt' ? 'Map' : 'Eyes';
+  }
   if (view === 'hunt') {
     const f = forward();
     const w = g.catchable(f.x, f.z);
     $('crosshair').classList.toggle('catch', !!w);
+    $('tb-catch').classList.toggle('on', !!w);
     let prompt = '';
     if (g.inAnyBeam(m.x, m.z)) prompt = 'A light is on you';
-    else if (w) prompt = `CLICK — take ${w.name} · fear ${Math.round(w.fear)}`;
-    else if (g.chalkInReach() >= 0) prompt = 'E erase · R redraw the chalk arrow';
+    else if (w) prompt = `${touchMode ? 'TAP' : 'CLICK'} — take ${w.name} · fear ${Math.round(w.fear)}`;
+    else if (g.chalkInReach() >= 0) prompt = touchMode ? 'Erase or redraw the chalk arrow' : 'E erase · R redraw the chalk arrow';
     $('prompt').textContent = prompt;
   }
 }
@@ -607,16 +684,18 @@ function frame(now: number) {
   const g = S.game;
   const me = self();
 
+  touch.setActive(touchMode && mode === 'playing' && !S.spectating);
   if (mode === 'playing' && !S.spectating) {
-    const f = (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0);
-    const r = (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0);
+    const clamp1 = (v: number) => Math.max(-1, Math.min(1, v));
+    const f = clamp1((keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0) + touch.move.y);
+    const r = clamp1((keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0) + touch.move.x);
     if (me) {
       // A human: move relative to where you look.
       const yaw = S.world.look.yaw;
       const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
       me.heading = Math.atan2(fz, fx);
       me.pitch = S.world.look.pitch;
-      me.sprint = keys.has('ShiftLeft') || keys.has('ShiftRight');
+      me.sprint = keys.has('ShiftLeft') || keys.has('ShiftRight') || touch.sprint;
       if (S.placed) {
         const turn = g.moveHuman(me, fx * f - fz * r, fz * f + fx * r, dt);
         if (turn) S.world.look.yaw = rotateYaw(S.world.look.yaw, turn);

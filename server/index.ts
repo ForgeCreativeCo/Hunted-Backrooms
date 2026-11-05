@@ -63,6 +63,11 @@ const MIME: Record<string, string> = {
 
 const http = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://x');
+  // Cheap check for the host's health probe, and for clients waking a sleeping server.
+  if (url.pathname === '/health') {
+    res.writeHead(200, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }).end('ok');
+    return;
+  }
   const rel = normalize(decodeURIComponent(url.pathname)).replace(/^([/\\])+/, '');
   const file = join(DIST, rel || 'index.html');
   if (!file.startsWith(DIST)) { res.writeHead(403).end(); return; }
@@ -326,9 +331,26 @@ function gameMsg(c: Client, msg: ClientMsg) {
 // ---- Sockets ----
 
 const wss = new WebSocketServer({ server: http, path: '/ws' });
+
+// Hosting proxies (Render sits behind Cloudflare) drop sockets that go quiet for
+// about a minute, which is every player sitting in a menu or a waiting room.
+// Ping everyone regularly; a socket that missed the last ping is dead, so close it
+// and free its seat.
+const alive = new WeakMap<WebSocket, boolean>();
+setInterval(() => {
+  for (const ws of wss.clients) {
+    if (alive.get(ws) === false) { ws.terminate(); continue; }
+    alive.set(ws, false);
+    ws.ping();
+  }
+}, 20000);
+
 wss.on('connection', (ws) => {
   const c: Client = { id: String(nextId++), ws, name: 'Player', role: null, ready: false, room: null, slot: -1, lastPosAt: 0 };
   clients.add(c);
+  alive.set(ws, true);
+  ws.on('pong', () => alive.set(ws, true));
+  ws.on('error', () => ws.terminate());
   send(c, { t: 'rooms', rooms: roomList() });
   ws.on('message', (data) => {
     let msg: ClientMsg;

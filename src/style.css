@@ -20,7 +20,7 @@ html, body {
   user-select: none;
 }
 
-canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh; display: block; touch-action: none; }
 canvas[hidden] { display: none; }
 
 kbd {
@@ -202,3 +202,68 @@ body.footage #bottom, body.footage #humanbar { bottom: 0; left: 0; right: 0; }
 
 .toggle { display: inline-flex; align-items: center; gap: 8px; margin-top: 14px; color: var(--dim); font-size: 13px; cursor: pointer; pointer-events: auto; }
 .toggle input { accent-color: #f2e6b0; width: 15px; height: 15px; margin: 0; cursor: pointer; }
+
+/* ---- Touch controls ---- */
+body:not(.touch) .touch-only, body.touch .keys-only { display: none !important; }
+body.view-sense .hunt-only { display: none !important; }
+
+#touch {
+  position: fixed; inset: 0; touch-action: none; -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+#touch[hidden] { display: none; }
+#stick {
+  position: absolute; width: 112px; height: 112px; margin: -56px 0 0 -56px;
+  border: 2px solid rgba(232, 223, 192, 0.35); border-radius: 50%;
+  background: rgba(0, 0, 0, 0.25); pointer-events: none;
+}
+#stick[hidden] { display: none; }
+#stick.rim { border-color: rgba(232, 223, 192, 0.8); }
+#knob {
+  position: absolute; left: 50%; top: 50%; width: 48px; height: 48px;
+  transform: translate(-50%, -50%); border-radius: 50%;
+  background: rgba(232, 223, 192, 0.45);
+}
+.tb {
+  min-width: 64px; min-height: 48px; padding: 6px 10px; font-size: 13px;
+  background: rgba(0, 0, 0, 0.45); border-color: rgba(232, 223, 192, 0.4);
+  touch-action: none; -webkit-tap-highlight-color: transparent;
+}
+.tb:active, .tb.on { background: rgba(232, 223, 192, 0.25); border-color: var(--fg); }
+.tb.dim { opacity: 0.4; }
+.tb.big { min-width: 84px; min-height: 84px; border-radius: 50%; font-size: 15px; }
+#t-pause {
+  position: absolute; top: max(10px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%);
+  min-width: 48px; min-height: 40px; padding: 4px 10px; font-size: 14px; letter-spacing: -0.1em;
+}
+#tbtns {
+  position: absolute; right: max(14px, env(safe-area-inset-right)); bottom: max(14px, env(safe-area-inset-bottom));
+  max-width: 52vw;
+}
+.tgroup { display: flex; flex-wrap: wrap-reverse; justify-content: flex-end; align-items: flex-end; gap: 8px; }
+
+/* The key hints give way to the buttons; the meters move up under the clock. */
+body.touch #abilities, body.touch #hkeys { display: none; }
+body.touch #bottom, body.touch #humanbar {
+  top: 62px; bottom: auto; right: auto; flex-direction: column; align-items: flex-start; gap: 6px;
+}
+body.touch .bar, body.touch .meter .bar { width: 100px; }
+body.touch #tl { left: max(16px, env(safe-area-inset-left)); }
+body.touch #tr { right: max(16px, env(safe-area-inset-right)); }
+body.touch #captions { bottom: 120px; width: min(420px, 60vw); font-size: 13px; }
+/* The tape stamp moves out from under the buttons. */
+body.touch #stamp { right: auto; left: calc(6vw + 4px); text-align: left; }
+body.touch.footage #hud { inset: calc(4vh + 40px) calc(4vw + 4px) calc(4vh + 20px); }
+
+@media (max-height: 500px) {
+  body.touch #roster { display: none; }
+  body.touch .tb { min-height: 42px; min-width: 56px; font-size: 12px; }
+  body.touch .tb.big { min-width: 72px; min-height: 72px; }
+  body.touch #cam .tl, body.touch #cam .tr { top: 4vh; }
+  body.touch #cam .bl, body.touch #cam .br { bottom: 4vh; }
+  body.touch #rec, body.touch #nightshot { top: calc(4vh + 10px); font-size: 18px; }
+  body.touch #stamp { bottom: calc(4vh + 10px); font-size: 16px; }
+  .overlay h1 { font-size: 56px; }
+  .cols { margin: 8px 0; gap: 20px; }
+  .cols ul { line-height: 1.6; font-size: 12px; }
+}

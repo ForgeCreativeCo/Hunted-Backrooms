@@ -44,12 +44,13 @@ export class Lobby {
     }
     this.status('Connecting…');
     try {
-      await this.net.connect(); // the server sends the room list on connect
+      await this.net.connect((s) => this.status(s)); // the server sends the room list on connect
       this.status('');
-    } catch {
+    } catch (e) {
       this.status(import.meta.env.DEV
         ? 'Could not reach the game server. Is it running? (npm run dev)'
-        : 'Could not reach the game server. It may be offline or waking up; try again in a minute.');
+        : e instanceof Error && e.message.includes('VITE_SERVER_URL') ? e.message
+        : 'Could not reach the game server. It may be offline; try again in a minute.');
     }
   }
 
@@ -69,6 +70,8 @@ export class Lobby {
     if (showing) $('mp').hidden = false;
     this.renderRooms();
     this.status('Lost connection to the game server');
+    // If the room list is on screen, reconnect on our own.
+    setTimeout(() => { if (!$('mp').hidden && !this.net.connected) this.openMenu(); }, 1500);
   }
 
   private join(room: number) {

@@ -11,7 +11,7 @@ npm install
 npm run dev
 ```
 
-This starts the game server (port 8787) and the client (port 5173) together. Open http://localhost:5173 in a desktop browser.
+This starts the game server (port 8787) and the client (port 5173) together. Open http://localhost:5173 in a browser. Phones and tablets get touch controls.
 
 - **Play solo** is the original prototype. Every solo night has a seed in the URL (`?seed=damp-1234`), so a night can be replayed or shared.
 - **Multiplayer** lists six rooms, each showing who is waiting or whether a night is under way. Pick one and join; the first player in becomes its host. Everyone picks a side and readies up, then the host starts the night. A room holds 5 players and resets when it empties.
@@ -48,6 +48,15 @@ Every night is generated from its seed, so online players all walk the same buil
 
 Caught or escaped humans spectate the rest of the night on the full map.
 
+### Touch controls
+
+On a phone or tablet the game switches to on-screen controls (a touchscreen laptop switches on its first touch, and back on its next mouse click). Picking Play solo or Multiplayer goes fullscreen and landscape where the browser allows it.
+
+- Left thumb: a stick appears wherever you put it down. Push it to the rim to sprint.
+- Right thumb: drag to look. As the monster, a quick tap catches a wanderer in reach.
+- Buttons: Crouch, Chalk and Light for humans; Take, Blackout, Shift, Seep, Erase, Redraw and Map for the monster. On the map, press Blackout or Shift and then tap where to use it.
+- ❚❚ at the top pauses.
+
 ## Hosting online
 
 ```bash
@@ -57,7 +66,13 @@ npm start
 
 `npm start` runs one Node process that serves the built game and the WebSocket on `PORT` (default 8787). Netlify and other static hosts can't run it; use a host with long-running Node processes such as Render, Fly.io or Railway. Point it at `npm install && npm run build` to build and `npm start` to run. `render.yaml` sets this up on Render (New → Blueprint).
 
-To keep the game itself on Netlify, set the Netlify build's environment variable `VITE_SERVER_URL` to the server's address (for example `https://hum-server.onrender.com`) and redeploy. Without it, the Netlify copy plays solo only. Render's free plan puts the server to sleep when idle, so the first visit after a while can take about a minute to connect.
+To keep the game itself on Netlify, set the Netlify build's environment variable `VITE_SERVER_URL` to the server's address (for example `https://hum-server.onrender.com`) and redeploy. Without it, the Netlify copy plays solo only. Render's free plan puts the server to sleep when idle, so the first visit after a while can take about a minute to connect; the menu shows "Waking the game server…" and keeps retrying for up to 100 seconds.
+
+If players can't connect:
+
+- Open `https://<your-server>/health` in a browser. It should say `ok`. If Render shows an error page instead, check the service's deploy logs on Render (a failed build leaves no live server).
+- On Netlify, `VITE_SERVER_URL` is baked in at build time, so redeploy after setting or changing it. Without it, the Multiplayer menu says no server is set up.
+- The server pings every connection every 20 seconds so hosting proxies don't drop players who are waiting in a menu.
 
 ## Checks
 
