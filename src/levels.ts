@@ -7,7 +7,7 @@ import { RNG } from './rng';
  * depth, so the server and every client agree on it without being told.
  */
 export interface LevelDef {
-  id: 'level0' | 'level1' | 'level6' | 'poolrooms' | 'street';
+  id: 'level0' | 'level1' | 'level2' | 'level6' | 'poolrooms' | 'street';
   /** As the HUD and end screen name it. */
   name: string;
   /** Shown as players arrive. */
@@ -15,8 +15,8 @@ export interface LevelDef {
   /** A side level: reached only now and then, through an ordinary-looking exit. */
   rare: boolean;
   gen: {
-    /** Office rooms of odd sizes, or a warehouse of huge concrete halls. */
-    rooms: 'office' | 'warehouse';
+    /** Office rooms of odd sizes, a warehouse of huge concrete halls, or narrow service tunnels. */
+    rooms: 'office' | 'warehouse' | 'tunnels';
     /** Is there power? 'none': every light in the level is dead. */
     power: 'on' | 'none';
     /** One room walled in and gone red. */
@@ -35,6 +35,10 @@ export interface LevelDef {
     supplies: number;
     /** Puddles on the floor: they splash like the Poolrooms' water. */
     puddles: number;
+    /** Pipes along the walls. */
+    pipes: boolean;
+    /** Steam vents that hiss now and then, hiding every sound nearby. */
+    vents: number;
   };
   look: {
     /** The air's colour where the lights are on. */
@@ -53,12 +57,14 @@ export interface LevelDef {
     darkFear: number;
     /** How far wanderers can see, and spot an exit from, 1 = Level 0. */
     view: number;
+    /** How hard the heat makes breathing: sprinting drains this much faster, and breath comes back this much slower. */
+    heat: number;
   };
 }
 
 const YELLOW = { fog: 0x3a321a, fogDensity: 0.042, ambient: 0xffeab0, hum: 1, surface: 'office' as const };
-const OFFICE = { rooms: 'office' as const, power: 'on' as const, supplies: 0, puddles: 0 };
-const NORMAL = { darkFear: 1, view: 1 };
+const OFFICE = { rooms: 'office' as const, power: 'on' as const, supplies: 0, puddles: 0, pipes: false, vents: 0 };
+const NORMAL = { darkFear: 1, view: 1, heat: 1 };
 
 export const LEVEL0: LevelDef = {
   id: 'level0',
@@ -77,11 +83,24 @@ export const LEVEL1: LevelDef = {
   rare: false,
   gen: {
     rooms: 'warehouse', power: 'on', manila: false, dark: 1, pitfalls: false, furnished: 0, pool: 'none', street: false,
-    supplies: 8, puddles: 30,
+    supplies: 8, puddles: 30, pipes: false, vents: 0,
   },
   look: { fog: 0x3d4140, fogDensity: 0.075, ambient: 0xdde4e4, hum: 0.6, surface: 'concrete' },
   // The fog hides an exit until you're nearly on it.
-  rules: { darkFear: 1, view: 0.5 },
+  rules: { darkFear: 1, view: 0.5, heat: 1 },
+};
+
+export const LEVEL2: LevelDef = {
+  id: 'level2',
+  name: 'Level 2',
+  signature: 'Hot, narrow tunnels and hissing pipes. When the steam goes, you can\'t hear a thing.',
+  rare: false,
+  gen: {
+    rooms: 'tunnels', power: 'on', manila: false, dark: 1, pitfalls: false, furnished: 0, pool: 'none', street: false,
+    supplies: 0, puddles: 10, pipes: true, vents: 16,
+  },
+  look: { fog: 0x3b2919, fogDensity: 0.05, ambient: 0xffc48a, hum: 0.5, surface: 'concrete' },
+  rules: { darkFear: 1, view: 1, heat: 1.5 },
 };
 
 export const LEVEL6: LevelDef = {
@@ -93,7 +112,7 @@ export const LEVEL6: LevelDef = {
   look: { ...YELLOW, hum: 0 },
   // The whole level is dark, so the dark gets to you more slowly than one dead room
   // would; but nowhere is lit, so nowhere calms you down.
-  rules: { darkFear: 0.5, view: 1 },
+  rules: { darkFear: 0.5, view: 1, heat: 1 },
 };
 
 export const POOLROOMS: LevelDef = {
@@ -116,13 +135,13 @@ export const STREET: LevelDef = {
   rules: NORMAL,
 };
 
-export const LEVELS: LevelDef[] = [LEVEL0, LEVEL1, LEVEL6, POOLROOMS, STREET];
+export const LEVELS: LevelDef[] = [LEVEL0, LEVEL1, LEVEL2, LEVEL6, POOLROOMS, STREET];
 
 /**
- * The main way down, in order. Below its end it comes round again. Levels 2 to
- * 5 will slot in between Level 1 and Level 6.
+ * The main way down, in order. Below its end it comes round again. Levels 3 to
+ * 5 will slot in between Level 2 and Level 6.
  */
-const MAIN: LevelDef[] = [LEVEL0, LEVEL1, LEVEL6];
+const MAIN: LevelDef[] = [LEVEL0, LEVEL1, LEVEL2, LEVEL6];
 const RARE: LevelDef[] = [POOLROOMS, STREET];
 /** Chance that any exit below the first level leads to a side level instead. */
 const RARE_CHANCE = 0.2;

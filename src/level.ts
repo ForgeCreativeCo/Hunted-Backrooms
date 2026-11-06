@@ -49,7 +49,17 @@ export interface Door {
 }
 
 export type PropType = 'chair' | 'desk' | 'cabinet' | 'crt' | 'mattress' | 'lamp' | 'phone' | 'mannequin' | 'stairs' | 'paper' | 'speaker' | 'house' | 'fence' | 'mailbox' | 'fan' | 'stop'
-  | 'crate' | 'pallet' | 'boxes';
+  | 'crate' | 'pallet' | 'boxes' | 'pipes' | 'valve';
+
+/** A steam vent on a wall: where the jet comes out, which way it blows, and where in its cycle it starts. */
+export interface Vent {
+  x: number;
+  z: number;
+  nx: number;
+  nz: number;
+  cell: number;
+  phase: number;
+}
 
 /** What a supply crate holds. */
 export type SupplyKind = 'battery' | 'chalk' | 'water';
@@ -147,6 +157,8 @@ export class Level {
   puddles: Puddle[] = [];
   /** Supply crates (Level 1). */
   supplies: Supply[] = [];
+  /** Steam vents (Level 2). */
+  vents: Vent[] = [];
   /** The Street's hall, or null if no place for it fit. */
   street: Street | null = null;
   /** The Street's hall in cells. */
@@ -191,6 +203,7 @@ export class Level {
     this.furnish(new RNG(seed + ':furnish'));
     this.placeSupplies(new RNG(seed + ':supplies'));
     this.placePuddles(new RNG(seed + ':puddles'));
+    this.placeVents(new RNG(seed + ':vents'));
   }
 
   // ---- Cells and edges ----
@@ -428,8 +441,10 @@ export class Level {
     // cramped and some rise much further than the building around them could allow.
     // A warehouse is mostly huge, tall concrete halls joined by wide aisles.
     const warehouse = this.def.gen.rooms === 'warehouse';
+    const tunnels = this.def.gen.rooms === 'tunnels';
     if (warehouse) this.carveWarehouse(rng);
-    const rooms = warehouse ? 0 : 16;
+    if (tunnels) this.carveTunnels(rng);
+    const rooms = warehouse || tunnels ? 0 : 16;
     for (let i = 0; i < rooms; i++) {
       const shape = rng.next();
       let rw: number, rh: number;
@@ -454,7 +469,7 @@ export class Level {
 
     // 3. Knock out some walls so there are loops, but keep plenty of dead ends.
     for (let k = 0; k < this.edgeCount; k++) {
-      if (this.walls[k] && !this.isBorder(k) && rng.chance(warehouse ? 0.3 : 0.22)) this.walls[k] = 0;
+      if (this.walls[k] && !this.isBorder(k) && rng.chance(warehouse ? 0.3 : tunnels ? 0.08 : 0.22)) this.walls[k] = 0;
     }
 
     // 3b. The Manila Room: one ordinary room, walled in again with as few ways in
@@ -494,7 +509,7 @@ export class Level {
         if (this.zone[a] === Zone.Street || this.zone[b] === Zone.Street) continue;
         const open = this.open(a, 1) && this.open(a, 2) && this.open(b, 0) && this.open(b, 3);
         // A warehouse's halls stand on rows of concrete columns.
-        if (open && rng.chance(warehouse ? 0.7 : 0.3)) this.pillars.push({ x: vx * this.CS, z: vy * this.CS });
+        if (open && rng.chance(warehouse ? 0.7 : tunnels ? 0.1 : 0.3)) this.pillars.push({ x: vx * this.CS, z: vy * this.CS });
       }
     }
 
@@ -529,7 +544,8 @@ export class Level {
     for (let c = 0; c < this.cells; c++) {
       // The Street is lit end to end, like a sound stage.
       // A warehouse's lamps hang further apart, with dim stretches between.
-      const lamp = warehouse ? (this.cx(c) + this.cy(c)) % 2 === 0 && rng.chance(0.7) : (this.cx(c) + this.cy(c)) % 2 === 0 || rng.chance(0.2);
+      // So do the tunnels' caged bulbs.
+      const lamp = warehouse || tunnels ? (this.cx(c) + this.cy(c)) % 2 === 0 && rng.chance(tunnels ? 0.6 : 0.7) : (this.cx(c) + this.cy(c)) % 2 === 0 || rng.chance(0.2);
       this.panel[c] = lamp || this.zone[c] === Zone.Street ? 1 : 0;
     }
 
@@ -611,6 +627,27 @@ export class Level {
     if (allPool) for (let c = 0; c < this.cells; c++) if (this.zone[c] === Zone.Bare) make(c, Zone.Pool);
     // No power anywhere: every light in the level is dead, where people arrive too.
     if (gen.power === 'none') this.dead.fill(1);
+  }
+
+  /**
+   * Service tunnels: the maze left almost as it is, low and narrow, with a few
+   * small pump rooms where it opens up a little.
+   */
+  private carveTunnels(rng: RNG) {
+    const { W, H } = this;
+    this.ceil.fill(2.4);
+    for (let i = 0; i < 5; i++) {
+      const rw = rng.int(2, 4), rh = rng.int(2, 3);
+      const rx = rng.int(0, W - rw + 1), ry = rng.int(0, H - rh + 1);
+      for (let y = ry; y < ry + rh; y++) {
+        for (let x = rx; x < rx + rw; x++) {
+          const c = this.cell(x, y);
+          this.ceil[c] = 3.2;
+          if (x < rx + rw - 1) this.walls[this.edgeOf(c, 1)] = 0;
+          if (y < ry + rh - 1) this.walls[this.edgeOf(c, 2)] = 0;
+        }
+      }
+    }
   }
 
   /**
@@ -1103,7 +1140,8 @@ export class Level {
       }
     }
 
-    if (!office) this.furnishWarehouse(rng, prop, solidAt, doorCell);
+    if (this.def.gen.rooms === 'warehouse') this.furnishWarehouse(rng, prop, solidAt, doorCell);
+    if (this.def.gen.pipes) this.furnishPipes(new RNG(this.seed + ':pipes'), prop);
 
     // Arrangements in open rooms, centred on grid corners so the walkways stay clear.
     for (let vy = 1; vy < H; vy++) {
@@ -1198,6 +1236,50 @@ export class Level {
         prop({ type: 'boxes', x, z, ry: rng.range(0, Math.PI * 2), v: rng.int(2, 5) });
         this.addSolid({ x0: x - 0.6, z0: z - 0.6, x1: x + 0.6, z1: z + 0.6 });
       }
+    }
+  }
+
+  /** Pipes along the walls: one to three runs on most faces, at different heights. */
+  private furnishPipes(rng: RNG, prop: (p: Partial<Prop> & { type: PropType; x: number; z: number }) => Prop) {
+    for (let k = 0; k < this.edgeCount; k++) {
+      if (!this.walls[k] || this.doorOnEdge.has(k)) continue;
+      const s = this.edgeSegment(k);
+      const mx = (s.x1 + s.x2) / 2, mz = (s.z1 + s.z2) / 2;
+      for (const c of this.edgeCells(k)) {
+        if (c < 0 || this.signAt(c) || !rng.chance(0.65)) continue;
+        const p = this.center(c);
+        const nx = Math.sign(Math.round(p.x - mx)), nz = Math.sign(Math.round(p.z - mz));
+        // v: which of the three heights carry a pipe (bits 1, 2, 4).
+        prop({ type: 'pipes', x: mx + nx * 0.08, z: mz + nz * 0.08, ry: Math.atan2(nx, nz), v: 1 + rng.int(7) });
+      }
+    }
+  }
+
+  /** Steam vents on walls, spread out, each starting its cycle at its own moment. */
+  private placeVents(rng: RNG) {
+    const n = this.def.gen.vents;
+    if (!n) return;
+    const options: { c: number; d: number }[] = [];
+    for (let c = 0; c < this.cells; c++) {
+      if (this.signAt(c) || this.doorCells[c] || c === this.spawnCell) continue;
+      for (let d = 0; d < 4; d++) if (!this.open(c, d) && !this.doorOnEdge.has(this.edgeOf(c, d))) options.push({ c, d });
+    }
+    const used: number[] = [];
+    for (let i = 0; i < n; i++) {
+      let best: { c: number; d: number } | null = null, bestD = -1;
+      for (let t = 0; t < 30 && options.length; t++) {
+        const o = rng.pick(options);
+        if (used.includes(o.c)) continue;
+        const d = used.length ? Math.min(...used.map((u) => Math.hypot(this.cx(u) - this.cx(o.c), this.cy(u) - this.cy(o.c)))) : 99;
+        if (d > bestD) { bestD = d; best = o; }
+      }
+      if (!best) break;
+      used.push(best.c);
+      const nx = -DX[best.d], nz = -DY[best.d];
+      const p = this.center(best.c);
+      const wx = p.x - nx * this.CS / 2, wz = p.z - nz * this.CS / 2;
+      this.props.push({ type: 'valve', x: wx + nx * 0.08, z: wz + nz * 0.08, y: 0, ry: Math.atan2(nx, nz), rx: 0, rz: 0, ceil: false, cell: best.c, v: 0 });
+      this.vents.push({ x: wx + nx * 0.45, z: wz + nz * 0.45, nx, nz, cell: best.c, phase: rng.range(0, CFG.VENT_PERIOD) });
     }
   }
 

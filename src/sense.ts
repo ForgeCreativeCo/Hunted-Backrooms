@@ -142,6 +142,20 @@ export class SenseView {
       ctx.fillText('EXIT', this.sx(p.x), this.sy(p.z) + 3);
     }
 
+    // Steam vents, and the deaf ring round each one while it hisses.
+    L.vents.forEach((v, i) => {
+      const on = g.ventOn(i);
+      ctx.fillStyle = on ? 'rgba(220,215,200,0.8)' : 'rgba(220,215,200,0.35)';
+      ctx.beginPath();
+      ctx.arc(this.sx(v.x), this.sy(v.z), 3, 0, Math.PI * 2);
+      ctx.fill();
+      if (!on) return;
+      ctx.fillStyle = 'rgba(220,215,200,0.07)';
+      ctx.beginPath();
+      ctx.arc(this.sx(v.x), this.sy(v.z), CFG.VENT_RADIUS * s, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
     // Fake exits: the monster knows they lead nowhere.
     for (const e of L.fakeExits) {
       const seg = L.edgeSegment(L.edgeOf(e.cell, e.dir));

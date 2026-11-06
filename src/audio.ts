@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { Game, Wanderer } from './game';
+import { CFG } from './config';
 import { RNG } from './rng';
 
 // Recorded clips for the big moments (public/audio), synthesized sound for the rest.
@@ -47,7 +48,10 @@ export class Sound {
   private pa: { x: number; z: number; y: number };
   private track: (typeof TRACKS)[number];
 
-  constructor(game: Game, camera: THREE.Camera, scene: THREE.Scene) {
+  /** Which vents were hissing last frame, so each burst starts its sound once. */
+  private ventsOn: boolean[] = [];
+
+  constructor(private game: Game, camera: THREE.Camera, scene: THREE.Scene) {
     camera.add(this.listener);
     this.camera = camera;
     this.pa = game.level.pa;
@@ -543,9 +547,38 @@ export class Sound {
     this.listener.removeFromParent();
   }
 
+  /** A vent's burst of steam: a loud, steady hiss that dies away as it ends. */
+  private ventHiss(x: number, z: number) {
+    const p = this.panner(x, z, 1.3);
+    p.refDistance = 3;
+    const t = this.ctx.currentTime;
+    const dur = CFG.VENT_ON;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noiseBuf;
+    src.loop = true;
+    const f = this.ctx.createBiquadFilter();
+    f.type = 'highpass';
+    f.frequency.value = 1800;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.5, t + 0.15);
+    g.gain.setValueAtTime(0.5, t + dur - 0.8);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    src.connect(f).connect(g).connect(p);
+    src.start(t);
+    src.stop(t + dur + 0.05);
+  }
+
   /** Called each frame with per-circuit light levels so the hum follows the lights. */
   update(levels: (i: number) => number) {
     for (let i = 0; i < this.hums.length; i++) this.setCircuit(i, levels(i));
+    if (this.ctx.state === 'running') {
+      this.game.level.vents.forEach((v, i) => {
+        const on = this.game.ventOn(i);
+        if (on && !this.ventsOn[i]) this.ventHiss(v.x, v.z);
+        this.ventsOn[i] = on;
+      });
+    }
 
     const now = this.ctx.currentTime;
     if (this.terrorLevel) {

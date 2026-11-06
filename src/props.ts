@@ -6,7 +6,7 @@ import type { Prop } from './level';
 // merged geometry per material, so hundreds of props cost a handful of draw calls.
 
 export type PropMat = 'wood' | 'laminate' | 'metal' | 'fabric' | 'plastic' | 'mattress' | 'skin' | 'paper' | 'dark' | 'screen' | 'shade'
-  | 'sidingBlue' | 'sidingGrey' | 'sidingRed' | 'white' | 'roof' | 'glass' | 'red' | 'cardboard';
+  | 'sidingBlue' | 'sidingGrey' | 'sidingRed' | 'white' | 'roof' | 'glass' | 'red' | 'cardboard' | 'rust';
 
 const SIDING: PropMat[] = ['sidingBlue', 'sidingGrey', 'sidingRed'];
 
@@ -297,6 +297,24 @@ function boxes(b: Builder, n: number) {
   cardboardBox(b, 0.5, 0.36, 0.42, 0.7, 0, 0.35, 0.6);
 }
 
+function pipes(b: Builder, v: number) {
+  // Runs along the wall (local x), held off it by brackets.
+  const runs: [number, number, PropMat][] = [[0.32, 0.11, 'rust'], [1.72, 0.05, 'metal'], [2.08, 0.08, 'rust']];
+  runs.forEach(([y, r, mat], i) => {
+    if (!(v & (1 << i))) return;
+    b.cyl(mat, r, r, 3.04, 0, y, r + 0.02, 0, 0, Math.PI / 2);
+    for (const x of [-1, 1]) b.box('dark', 0.04, r * 2.4, r + 0.04, x, y, (r + 0.04) / 2);
+  });
+}
+
+function valve(b: Builder) {
+  // A stub of pipe out of the wall, a valve wheel, and a nozzle the steam comes out of.
+  b.cyl('rust', 0.08, 0.08, 0.36, 0, 1.3, 0.18, Math.PI / 2);
+  b.cyl('rust', 0.11, 0.11, 0.06, 0, 1.3, 0.38, Math.PI / 2);
+  b.cyl('metal', 0.03, 0.03, 0.22, 0, 1.47, 0.18);
+  b.add('red', new THREE.TorusGeometry(0.1, 0.014, 6, 16), 0, 1.58, 0.18, Math.PI / 2);
+}
+
 export function buildProps(props: Prop[]): Map<PropMat, THREE.BufferGeometry> {
   const b = new Builder();
   const flip = new THREE.Matrix4().makeRotationX(Math.PI);
@@ -334,6 +352,8 @@ export function buildProps(props: Prop[]): Map<PropMat, THREE.BufferGeometry> {
       case 'crate': crate(b); break;
       case 'pallet': pallet(b, p.v); break;
       case 'boxes': boxes(b, p.v); break;
+      case 'pipes': pipes(b, p.v); break;
+      case 'valve': valve(b); break;
     }
   }
   const out = new Map<PropMat, THREE.BufferGeometry>();

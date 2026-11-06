@@ -57,6 +57,10 @@ export const CFG = {
   STAMINA_REGEN: 8,
   FEAR_MULT: { panicker: 1.4, mapper: 0.85 },
   SPLASH: 1.7, // footsteps in the Poolrooms' water carry this much further
+  // Steam vents (Level 2)
+  VENT_PERIOD: 11, // seconds from one burst of steam to the next
+  VENT_ON: 4.5, // seconds each burst lasts
+  VENT_RADIUS: 5, // metres: within this of a hissing vent, nothing is heard
 
   // Human players
   MAX_HUMANS: 4,

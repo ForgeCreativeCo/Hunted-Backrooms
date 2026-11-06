@@ -473,6 +473,8 @@ export class World3D {
   private trimKeys: number[] = [];
   private cellTex: THREE.DataTexture;
   private supplyViews: THREE.Group[] = [];
+  /** Each vent's plume of steam, and how much of it is showing (eased). */
+  private steam: { pts: THREE.Points; mat: THREE.PointsMaterial; on: number }[] = [];
   private doorViews: { d: Door; pivot: THREE.Group; base: number; k: number; cur: number }[] = [];
   private floor: THREE.InstancedMesh;
   private ceil: THREE.InstancedMesh;
@@ -666,6 +668,7 @@ export class World3D {
     this.buildDoors(grime);
     this.buildFurniture(grime);
     this.buildSupplies(grime);
+    this.buildSteam();
 
     // The monster sees a little in the dark: a cold, faint light that follows its eyes.
     this.darkvision = new THREE.PointLight(0x6f86c0, 0, 8, 1.6);
@@ -961,6 +964,7 @@ export class World3D {
       glass: pm({ color: 0x0d1114, roughness: 0.12, metalness: 0.4 }),
       red: pm({ color: 0x9c1b16, roughness: 0.5 }),
       cardboard: pm({ color: 0x8a6a45, roughness: 0.95 }),
+      rust: pm({ color: 0x5c3d28, roughness: 0.7, metalness: 0.35 }),
       // Glows whether or not there's power.
       screen: new THREE.MeshBasicMaterial({ color: new THREE.Color(0.16, 0.32, 0.26) }),
       shade: new THREE.MeshBasicMaterial({ color: new THREE.Color(1.8, 1.35, 0.7), side: THREE.DoubleSide }),
@@ -970,6 +974,51 @@ export class World3D {
       mesh.frustumCulled = false;
       this.scene.add(mesh);
     }
+  }
+
+  /** A plume of steam for each vent, shown while it hisses. */
+  private buildSteam() {
+    const L = this.game.level;
+    const N = 70;
+    const sprite = T.dustSprite();
+    for (const v of L.vents) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(N * 3), 3));
+      const mat = new THREE.PointsMaterial({
+        size: 0.55, map: sprite, transparent: true, opacity: 0, depthWrite: false, color: 0xd8d4cc,
+      });
+      const pts = new THREE.Points(geo, mat);
+      pts.frustumCulled = false;
+      pts.visible = false;
+      this.scene.add(pts);
+      this.steam.push({ pts, mat, on: 0 });
+      void v;
+    }
+  }
+
+  private updateSteam(t: number, dt: number) {
+    const g = this.game;
+    const L = g.level;
+    this.steam.forEach((st, i) => {
+      const v = L.vents[i];
+      st.on += ((g.ventOn(i) ? 1 : 0) - st.on) * Math.min(1, dt * 4);
+      st.pts.visible = st.on > 0.01;
+      if (!st.pts.visible) return;
+      st.mat.opacity = 0.32 * st.on;
+      const pos = st.pts.geometry.getAttribute('position') as THREE.BufferAttribute;
+      const a = pos.array as Float32Array;
+      const n = a.length / 3;
+      for (let k = 0; k < n; k++) {
+        // Each puff travels out from the nozzle, spreading and rising as it goes.
+        const age = (t * 0.9 + k / n) % 1;
+        const r = 2.4 * age;
+        const sx = Math.sin(k * 12.9898) * 0.5, sy = Math.sin(k * 78.233) * 0.5;
+        a[k * 3] = v.x + v.nx * r + v.nz * sx * age * 1.4;
+        a[k * 3 + 1] = 1.3 + age * age * 0.8 + sy * age * 0.6;
+        a[k * 3 + 2] = v.z + v.nz * r + v.nx * sx * age * 1.4;
+      }
+      pos.needsUpdate = true;
+    });
   }
 
   /** What's in each supply crate, shown until someone takes it. */
@@ -1325,6 +1374,7 @@ export class World3D {
     this.syncChalk();
     this.syncPeople(dt, t);
     this.supplyViews.forEach((v, i) => (v.visible = !g.taken[i]));
+    this.updateSteam(t, dt);
 
     this.hunt.uniforms.time.value = t;
     this.hunt.uniforms.redden.value = redden;

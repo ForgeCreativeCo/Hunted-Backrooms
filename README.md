@@ -29,7 +29,7 @@ A run is a descent through the Backrooms. Every exit leads one level deeper, and
 - The run is over when a level ends with nobody out. The end screen says how deep it got.
 - Solo as the monster, **Follow them down** takes you after the survivors. Solo as a human, finding an exit lets you watch the others try for the exits until they close; then you go down together.
 - Online, the next level starts for the whole room six seconds after the last one ends. A human player who didn't get out watches the rest of the run.
-- Each level is one of a set of described levels (`src/levels.ts`): how it's laid out, its air, light and hum, and the line shown as you arrive. The main way down is Level 0, Level 1, Level 6, and round again (Levels 2 to 5 will slot in before Level 6). Below the first level, any exit has a 1 in 5 chance of leading to a side level instead, never two in a row: the Poolrooms or the Street. After a side level the run carries on down the main way.
+- Each level is one of a set of described levels (`src/levels.ts`): how it's laid out, its air, light and hum, and the line shown as you arrive. The main way down is Level 0, Level 1, Level 2, Level 6, and round again (Levels 3 to 5 will slot in before Level 6). Below the first level, any exit has a 1 in 5 chance of leading to a side level instead, never two in a row: the Poolrooms or the Street. After a side level the run carries on down the main way.
 - Under every level, the run tightens with depth. The numbers move in a straight line between these depths and stay put below depth 12 (`dialsFor` in `src/levels.ts`; starting guesses, not tuned):
 
   | Depth | 1 | 4 | 8 | 12+ |
@@ -61,6 +61,12 @@ Every level is generated from its seed, so online players all walk the same buil
 - Puddles where the roof leaks. Like the Poolrooms' water, they splash: footsteps in one carry 1.7 times as far.
 - Pallets of boxes against the walls, and the odd tower of boxes out in the halls.
 - Eight supply crates, left by someone who came through before. Walk up to one to take what's in it: batteries (45% of a flashlight back), a box of chalk (4 more arrows), or almond water (fear down by 40, and your breath back). AI wanderers rummage through any crate they pass. Whatever you take carries on down with you.
+
+### Level 2
+
+- Pipe tunnels: the maze left almost as it is, narrow and low (2.4 m), opening up only in a few small pump rooms. Pipes run along most walls, and caged lamps hang far apart. The air is hot and brown.
+- The heat: sprinting drains breath one and a half times as fast, and it comes back two thirds as fast.
+- Sixteen steam vents, each bursting for 4.5 seconds in every 11. While one hisses, nothing within 5 m of it carries to the monster: footsteps and breathing make no pulse, and AI wanderers there can't sense the monster right behind them either. The monster's map shows each vent, and the deaf ring round it while it hisses.
 
 ### Level 6
 

@@ -319,6 +319,21 @@ export class Game {
     this.setState(w, 'confused', 2.2);
   }
 
+  /** Is this steam vent hissing right now? */
+  ventOn(i: number) {
+    const v = this.level.vents[i];
+    return (this.t + v.phase) % CFG.VENT_PERIOD < CFG.VENT_ON;
+  }
+
+  /** Is this spot drowned out by a hissing vent? */
+  masked(x: number, z: number) {
+    const V = this.level.vents;
+    for (let i = 0; i < V.length; i++) {
+      if (Math.hypot(V[i].x - x, V[i].z - z) < CFG.VENT_RADIUS && this.ventOn(i)) return true;
+    }
+    return false;
+  }
+
   /** Is there something left in a crate in this cell? */
   supplyIn(cell: number) {
     return this.level.supplies.findIndex((s, i) => s.cell === cell && !this.taken[i]);
@@ -571,8 +586,9 @@ export class Game {
     else if (lit && this.t - w.seenT > 6) w.fear = Math.max(0, w.fear - 0.7 * dt);
 
     const sprinting = w.sprint && w.moving && !w.exhausted && !w.crouch;
-    if (sprinting) w.stamina -= CFG.STAMINA_DRAIN * dt;
-    else w.stamina = Math.min(100, w.stamina + CFG.STAMINA_REGEN * dt * (w.moving ? 1 : 1.5));
+    const heat = this.def.rules.heat;
+    if (sprinting) w.stamina -= CFG.STAMINA_DRAIN * heat * dt;
+    else w.stamina = Math.min(100, w.stamina + (CFG.STAMINA_REGEN / heat) * dt * (w.moving ? 1 : 1.5));
     if (w.stamina <= 0) { w.stamina = 0; w.exhausted = true; }
     if (w.exhausted && w.stamina >= 40) w.exhausted = false;
 
@@ -702,7 +718,7 @@ export class Game {
         w.next = -1;
         w.path = [];
       }
-    } else if (dm < CFG.NOTICE_RANGE && w.state !== 'panic' && L.los(w.x, w.z, m.x, m.z) && this.rng.chance(0.8 * dt)) {
+    } else if (dm < CFG.NOTICE_RANGE && w.state !== 'panic' && L.los(w.x, w.z, m.x, m.z) && !this.masked(w.x, w.z) && this.rng.chance(0.8 * dt)) {
       // Something right behind them: they turn around.
       w.heading = Math.atan2(m.z - w.z, m.x - w.x);
       this.addFear(w, 6);
@@ -753,8 +769,9 @@ export class Game {
     // Stamina.
     const sprinting = !w.exhausted && (w.state === 'flee' || w.state === 'panic' || (w.state === 'escape' && w.stamina > 30));
     const standing = w.state === 'alert' || w.state === 'confused' || w.state === 'chalk' || w.state === 'hide';
-    if (sprinting && !standing) w.stamina -= CFG.STAMINA_DRAIN * dt;
-    else w.stamina = Math.min(100, w.stamina + CFG.STAMINA_REGEN * dt * (standing ? 1.5 : 1));
+    const heat = this.def.rules.heat;
+    if (sprinting && !standing) w.stamina -= CFG.STAMINA_DRAIN * heat * dt;
+    else w.stamina = Math.min(100, w.stamina + (CFG.STAMINA_REGEN / heat) * dt * (standing ? 1.5 : 1));
     if (w.stamina <= 0) {
       w.stamina = 0;
       w.exhausted = true;
@@ -849,6 +866,11 @@ export class Game {
   }
 
   private emitNoise(w: Wanderer, loud: number, audible = true, splash = false) {
+    // Under a hissing vent's steam, nothing carries to the monster.
+    if (this.masked(w.x, w.z)) {
+      if (audible) this.events.sound(splash ? 'splash' : 'step', w.x, w.z, loud * 0.4);
+      return;
+    }
     w.lastHeardT = this.t;
     w.heardX = w.x;
     w.heardZ = w.z;
