@@ -7,7 +7,7 @@ import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { CFG } from '../src/config';
-import { Game } from '../src/game';
+import { Game, levelName, NightResult, PartyMember } from '../src/game';
 import { ClientMsg, encodeSnapshot, LobbyPlayer, NetEvent, Role, RoomInfo, ServerMsg } from '../src/net/protocol';
 import { randomSeed } from '../src/rng';
 
@@ -40,11 +40,19 @@ interface Room {
   timer: ReturnType<typeof setInterval> | null;
   lastTick: number;
   wallsSent: number;
+  /** The run under way: its seed, and the level it's on (or about to start). Null in the lobby. */
+  run: { seed: string; depth: number } | null;
+  /** The pause between one level ending and the next starting. */
+  nextTimer: ReturnType<typeof setTimeout> | null;
 }
+
+/** How long everyone sees a level's end before the survivors arrive in the next. */
+const BETWEEN_LEVELS_MS = 6000;
 
 // Six permanent rooms. An empty room just resets; it's never removed.
 const rooms: Room[] = Array.from({ length: ROOM_COUNT }, (_, i) => ({
   id: i + 1, name: `Room ${i + 1}`, clients: [], hostId: '', game: null, events: [], timer: null, lastTick: 0, wallsSent: 0,
+  run: null, nextTimer: null,
 }));
 const clients = new Set<Client>();
 let nextId = 1;
@@ -94,7 +102,7 @@ function send(c: Client, msg: ServerMsg) {
 function roomList(): RoomInfo[] {
   return rooms.map((r) => ({
     id: r.id, name: r.name, players: r.clients.length, max: MAX_PLAYERS,
-    playing: !!r.game, monster: r.clients.some((c) => c.role === 'monster'),
+    playing: !!r.run, monster: r.clients.some((c) => c.role === 'monster'),
   }));
 }
 
@@ -123,19 +131,22 @@ function sendLobby(room: Room) {
 function leaveRoom(c: Client) {
   const room = c.room;
   if (!room) return;
+  const wasMonster = c.role === 'monster';
   room.clients = room.clients.filter((o) => o !== c);
   c.room = null;
   c.role = null;
   c.ready = false;
   const g = room.game;
-  if (g) {
-    if (c.slot === -1) endGame(room, 'The monster left the game');
-    else if (g.wanderers[c.slot]) g.releasePlayer(g.wanderers[c.slot]); // an AI takes over
-  }
+  // The monster leaving ends the run, mid-level or between levels; a human leaving hands their body to an AI.
+  if (room.run && wasMonster) endGame(room, 'The monster left the game');
+  else if (g && c.slot >= 0 && g.wanderers[c.slot]) g.releasePlayer(g.wanderers[c.slot]);
   if (!room.clients.length) {
     if (room.timer) clearInterval(room.timer);
+    if (room.nextTimer) clearTimeout(room.nextTimer);
     room.timer = null;
+    room.nextTimer = null;
     room.game = null;
+    room.run = null;
     room.hostId = '';
     broadcastRooms();
     return;
@@ -153,7 +164,7 @@ function lobbyMsg(c: Client, msg: ClientMsg) {
       const room = rooms.find((r) => r.id === Number(msg.room));
       if (!room) return send(c, { t: 'error', msg: 'No such room' });
       if (room === c.room) return;
-      if (room.game) return send(c, { t: 'error', msg: `A night is already under way in ${room.name}` });
+      if (room.run) return send(c, { t: 'error', msg: `A run is already under way in ${room.name}` });
       if (room.clients.length >= MAX_PLAYERS) return send(c, { t: 'error', msg: `${room.name} is full` });
       leaveRoom(c);
       c.name = cleanName(msg.name, room);
@@ -168,7 +179,7 @@ function lobbyMsg(c: Client, msg: ClientMsg) {
       return;
   }
   const room = c.room;
-  if (!room || room.game) return;
+  if (!room || room.run) return;
   switch (msg.t) {
     case 'role': {
       if (msg.role === 'monster' && room.clients.some((o) => o !== c && o.role === 'monster')) {
@@ -201,28 +212,41 @@ function lobbyMsg(c: Client, msg: ClientMsg) {
 
 const r2 = (v: number) => Math.round(v * 100) / 100;
 
+/** Start a run: its first level, with everyone in the room. */
 function startGame(room: Room) {
+  room.run = { seed: randomSeed(), depth: 1 };
+  startLevel(room, null);
+}
+
+/**
+ * Start the run's current level. The first level takes every human in the
+ * room; deeper ones only the party that got out of the level above, and a
+ * human who didn't make it watches.
+ */
+function startLevel(room: Room, party: PartyMember[] | null) {
+  const run = room.run!;
+  room.nextTimer = null;
   const humans = room.clients.filter((c) => c.role === 'human');
-  const players = humans.map((c) => c.name);
-  const seed = randomSeed();
+  const players = party ? party.filter((p) => p.player).map((p) => p.name) : humans.map((c) => c.name);
   room.events = [];
-  const game = new Game(seed, {
+  const game = new Game(run.seed, {
     sound: (k, x, z, l, who) => room.events.push(['s', k, r2(x), r2(z), r2(l), who ? who.id : -1]),
     caption: (text, who) => room.events.push(['c', text, who ? who.id : -1]),
     toast: (text) => room.events.push(['t', text]),
     pulse: (p, who) => room.events.push(['p', r2(p.x), r2(p.z), r2(p.maxR), Math.round(p.fear), who.id]),
-  }, { players });
+  }, { players, depth: run.depth, party: party ?? undefined });
   room.game = game;
   room.wallsSent = 0;
   for (const c of room.clients) {
-    c.slot = c.role === 'human' ? humans.indexOf(c) : -1;
+    // A human's slot is where their name is in this level; not there = lost above.
+    c.slot = c.role === 'human' ? game.wanderers.findIndex((w) => w.player && w.name === c.name) : -1;
     c.lastPosAt = 0;
-    send(c, { t: 'start', seed, role: c.role!, slot: c.slot, players });
+    send(c, { t: 'start', seed: run.seed, role: c.role!, slot: c.slot, players, depth: run.depth, party });
   }
   room.lastTick = performance.now();
   room.timer = setInterval(() => tick(room), 1000 / TICK_HZ);
   broadcastRooms();
-  console.log(`[${room.name}] night started: seed ${seed}, ${humans.length} human player(s)`);
+  console.log(`[${room.name}] ${levelName(run.depth)} started: seed ${run.seed}, ${game.wanderers.length} wanderer(s), ${players.length} of them players`);
 }
 
 function tick(room: Room) {
@@ -237,25 +261,51 @@ function tick(room: Room) {
   const forHumans = room.events.filter((e) => !(e[0] === 't' && e[1].startsWith('Seen')));
   for (const c of room.clients) send(c, { t: 'snap', s, ev: c.role === 'monster' ? room.events : forHumans });
   room.events.length = 0;
-  if (g.over) endGame(room);
+  if (g.over) endLevel(room);
 }
 
-function endGame(room: Room, reason?: string) {
-  const g = room.game;
-  if (!g) return;
+/** A level is over: the survivors go down after a pause, or, with nobody out, the run ends. */
+function endLevel(room: Room) {
+  const g = room.game, run = room.run;
+  if (!g || !run || !g.result) return;
+  if (!g.result.survivors.length) return endGame(room);
   if (room.timer) clearInterval(room.timer);
   room.timer = null;
   room.game = null;
-  const result = g.result ?? {
-    score: g.score, quota: CFG.QUOTA, stars: 0, reason: 'empty' as const,
-    caught: g.wanderers.filter((w) => w.caught).length, escaped: g.wanderers.filter((w) => w.escaped).length,
-  };
+  const next = run.depth + 1;
+  for (const c of room.clients) send(c, { t: 'end', result: g.result, next });
+  console.log(`[${room.name}] ${levelName(run.depth)} over: ${g.result.survivors.length} went deeper`);
+  const party = g.result.survivors;
+  room.nextTimer = setTimeout(() => {
+    if (room.run !== run) return; // the run was abandoned meanwhile
+    run.depth = next;
+    startLevel(room, party);
+  }, BETWEEN_LEVELS_MS);
+}
+
+/** The run is over (or abandoned): everyone goes back to the room's lobby. */
+function endGame(room: Room, reason?: string) {
+  const g = room.game, run = room.run;
+  if (!run) return;
+  if (room.timer) clearInterval(room.timer);
+  if (room.nextTimer) clearTimeout(room.nextTimer);
+  room.timer = null;
+  room.nextTimer = null;
+  room.game = null;
+  room.run = null;
+  // Abandoned between levels, or mid-level: nobody goes on.
+  const result = { ...(g ? g.finish('empty') : lastResult(run)), survivors: [] };
   for (const c of room.clients) {
     c.ready = false;
     send(c, { t: 'end', result, reason });
   }
   sendLobby(room);
-  console.log(`[${room.name}] night ended: ${result.score}/${result.quota} fear${reason ? ` (${reason})` : ''}`);
+  console.log(`[${room.name}] run ended at ${levelName(run.depth)}: ${result.score}/${result.quota} fear${reason ? ` (${reason})` : ''}`);
+}
+
+/** A result to show when a run is abandoned between levels, with no level running. */
+function lastResult(run: { depth: number }): NightResult {
+  return { score: 0, quota: CFG.QUOTA, stars: 0, reason: 'empty', caught: 0, escaped: 0, depth: run.depth, survivors: [] };
 }
 
 function gameMsg(c: Client, msg: ClientMsg) {

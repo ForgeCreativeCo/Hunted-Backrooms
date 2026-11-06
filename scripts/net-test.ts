@@ -83,12 +83,13 @@ host.send({ t: 'start' });
 await sleep(300);
 
 const sa = a.last('start'), sh = host.last('start');
-check(!!sa && sa.role === 'human' && sa.slot === 0 && sh?.role === 'monster', 'night started with roles and slots');
+check(!!sa && sa.role === 'human' && sa.slot === 0 && sh?.role === 'monster', 'run started with roles and slots');
+check(sa?.depth === 1 && sa.party === null, 'the run starts on its first level, with everyone');
 check(JSON.stringify(sa?.players) === JSON.stringify(['Joe 2', 'Avery']), 'roster lists the human players');
 stranger.send({ t: 'join', room: 3, name: 'x' });
 await sleep(150);
-check(stranger.last('error')?.msg === 'A night is already under way in Room 3', 'cannot join a room mid-night');
-check(stranger.last('rooms')?.rooms[2].playing === true, 'the room list shows the night under way');
+check(stranger.last('error')?.msg === 'A run is already under way in Room 3', 'cannot join a room mid-run');
+check(stranger.last('rooms')?.rooms[2].playing === true, 'the room list shows the run under way');
 const snap0 = a.last('snap')?.s;
 check(!!snap0 && snap0.w.length === 3, 'snapshots stream; 2 players + 1 AI fill-in = 3 wanderers');
 check(typeof snap0?.doors === 'string' && snap0.doors.length > 20, `door states stream (${snap0?.doors.length} doors)`);
@@ -134,7 +135,7 @@ check((host.last('snap')!.s.w[1][8] & 128) === 0, 'a departed player\'s wanderer
 
 host.ws.close();
 await sleep(200);
-check(a.last('end')?.reason === 'The monster left the game', 'night ends when the monster leaves');
+check(a.last('end')?.reason === 'The monster left the game', 'the run ends when the monster leaves');
 const back = a.last('lobby');
 check(back?.players.length === 1 && back.players[0].host, 'remaining player is back in Room 3, now its host');
 

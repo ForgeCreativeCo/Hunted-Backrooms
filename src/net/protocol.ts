@@ -1,4 +1,4 @@
-import { Game, NightResult, WState } from '../game';
+import { Game, NightResult, PartyMember, WState } from '../game';
 
 // Messages between clients and the game server. The server runs the real Game;
 // each client keeps a mirror Game (same seed, same roster) and copies snapshots into it.
@@ -41,12 +41,14 @@ export type ServerMsg =
   | { t: 'rooms'; rooms: RoomInfo[] }
   | { t: 'lobby'; room: number; name: string; you: string; players: LobbyPlayer[] }
   | { t: 'error'; msg: string }
-  | { t: 'start'; seed: string; role: Role; slot: number; players: string[] }
+  // A level starting: the run's seed, how deep, and who is in it. slot -1 as a human: you were lost above, and watch.
+  | { t: 'start'; seed: string; role: Role; slot: number; players: string[]; depth: number; party: PartyMember[] | null }
   | { t: 'snap'; s: Snapshot; ev: NetEvent[] }
   | { t: 'correct'; x: number; z: number }
   | { t: 'actErr'; msg: string }
   | { t: 'caught'; name: string; pts: number }
-  | { t: 'end'; result: NightResult; reason?: string };
+  // A level over. `next`: the depth the survivors go on to; absent when the run is over.
+  | { t: 'end'; result: NightResult; reason?: string; next?: number };
 
 /** Sounds, captions, toasts and sense pulses raised by the server's game this tick. */
 export type NetEvent =

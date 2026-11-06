@@ -13,14 +13,25 @@ npm run dev
 
 This starts the game server (port 8787) and the client (port 5173) together. Open http://localhost:5173 in a browser. Phones and tablets get touch controls.
 
-- **Play solo** is the original prototype. Every solo night has a seed in the URL (`?seed=damp-1234`), so a night can be replayed or shared.
-- **Multiplayer** lists six rooms, each showing who is waiting or whether a night is under way. Pick one and join; the first player in becomes its host. Everyone picks a side and readies up, then the host starts the night. A room holds 5 players and resets when it empties.
+- **Play solo** is the original prototype. Every solo run has a seed in the URL (`?seed=damp-1234`), so a run can be replayed or shared.
+- **Multiplayer** lists six rooms, each showing who is waiting or whether a run is under way. Pick one and join; the first player in becomes its host. Everyone picks a side and readies up, then the host starts the run. A room holds 5 players and resets when it empties.
 
 To play with people on other machines, use the production server below: it serves the game and the multiplayer connection from one port, so that's the only one others need to reach.
 
+## The descent
+
+A run is a descent through the Backrooms. Every exit leads one level deeper, and nothing leads back.
+
+- A level ends when nobody is left wandering it (everyone has found an exit or been caught), or at dawn. Whoever found an exit goes down to the next level; anyone still inside at dawn is lost with it.
+- Only the people who got out arrive in the next level, together. Nobody new joins below the first level.
+- The run is over when a level ends with nobody out. The end screen says how deep it got.
+- Solo as the monster, **Follow them down** takes you after the survivors. Solo as a human, finding an exit takes you down with whoever got out before you; anyone still inside is left behind.
+- Online, the next level starts for the whole room six seconds after the last one ends. A human player who didn't get out watches the rest of the run.
+- The HUD names the level: the first is Level 0, the next Level 1, and so on. For now every level is built like Level 0. Each one has its own layout, made from the run's seed and its depth (`seed:L2`, `seed:L3` …), so everyone in a room walks the same building.
+
 ## The level
 
-Every night is generated from its seed, so online players all walk the same building.
+Every level is generated from its seed, so online players all walk the same building.
 
 - Most of Level 0 is bare: the same wallpaper, damp carpet and buzzing lights for ever. The furniture gathers in three pockets, with only the odd stray thing elsewhere.
 - One region never had power. Its lights are dead and silent all night; the monster sees there in night vision, and its Blackout does nothing.
@@ -35,10 +46,10 @@ Every night is generated from its seed, so online players all walk the same buil
 
 ## Multiplayer
 
-- The server runs the real night (AI, fear, abilities, catches) and streams it to everyone 30 times a second. Each player moves themselves and the server checks the move; a move that's too fast is snapped back.
-- AI wanderers fill the empty human slots, so there are always at least three prey and the monster can't be sure who's real. If a human player drops out mid-night, an AI takes over their body. If the monster drops out, the night ends.
+- The server runs the real level (AI, fear, abilities, catches) and streams it to everyone 30 times a second. Each player moves themselves and the server checks the move; a move that's too fast is snapped back.
+- On the first level, AI wanderers fill the empty human slots, so there are always at least three prey and the monster can't be sure who's real. If a human player drops out mid-level, an AI takes over their body. If the monster drops out, the run ends.
 - Humans have no map. They get first-person eyes, a stick of chalk and a flashlight with about 90 seconds of battery.
-- The monster wins if it harvests the fear quota before dawn; otherwise the humans win.
+- On each level the monster wins if it harvests the fear quota before dawn; otherwise the humans win that level.
 
 | Human controls | |
 | --- | --- |
@@ -48,7 +59,7 @@ Every night is generated from its seed, so online players all walk the same buil
 | `F` | Flashlight. Lets you see in a blackout, slows the monster to half speed and blocks its abilities while it's in the beam |
 | `E` | Draw a chalk arrow at your feet, pointing the open way you face |
 
-Caught or escaped humans spectate the rest of the night on the full map.
+Caught or escaped humans spectate the rest of the level on the full map; humans who were caught or left behind keep watching for the rest of the run.
 
 ### Touch controls
 

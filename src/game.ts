@@ -19,6 +19,34 @@ export interface GameEvents {
 export interface GameOptions {
   /** Names of human players. They take the first wanderer slots; AI fills the rest. */
   players?: string[];
+  /** How deep this level is in the run: 1 is the first level (Level 0). */
+  depth?: number;
+  /**
+   * Who came down from the level above, in slot order (players first). Only
+   * they are in this level: nobody new arrives below the first.
+   */
+  party?: PartyMember[];
+}
+
+/** Someone who made it out of a level and carries on down. */
+export interface PartyMember {
+  name: string;
+  kind: Kind;
+  voice: number;
+  player: boolean;
+}
+
+/**
+ * Each level of a run is built from the run's seed and its depth, so everyone
+ * in a room walks the same building. The first level keeps the run's own seed.
+ */
+export function levelSeed(seed: string, depth: number) {
+  return depth <= 1 ? seed : `${seed}:L${depth}`;
+}
+
+/** The level's name as the lore numbers it: the first level is Level 0. */
+export function levelName(depth: number) {
+  return `Level ${depth - 1}`;
 }
 
 export interface Pulse {
@@ -125,6 +153,9 @@ export interface NightResult {
   caught: number;
   escaped: number;
   reason: 'dawn' | 'empty';
+  /** The level this was, and who got out of it to carry on down. Nobody: the run is over. */
+  depth: number;
+  survivors: PartyMember[];
 }
 
 export class Game {
@@ -145,9 +176,15 @@ export class Game {
   private phoneT = 0;
   private solidScratch: Box[] = [];
 
+  /** How deep in the run this level is: 1 is the first. */
+  readonly depth: number;
+
+  /** `seed` is the run's seed; this level is built from it and the depth. */
   constructor(public seed: string, public events: GameEvents, opts: GameOptions = {}) {
-    this.level = new Level(seed);
-    this.rng = new RNG(seed + ':night');
+    this.depth = Math.max(1, opts.depth ?? 1);
+    const ls = levelSeed(seed, this.depth);
+    this.level = new Level(ls);
+    this.rng = new RNG(ls + ':night');
     this.blackout = new Float32Array(this.level.circuitCount);
     this.phoneT = this.rng.range(45, 90);
     const m = this.level.center(this.level.monsterCell);
@@ -156,6 +193,17 @@ export class Game {
     // Face the wanderers' spawn.
     const s = this.level.center(this.level.spawnCell);
     this.monster.yaw = Math.atan2(-(s.x - m.x), -(s.z - m.z));
+
+    // Further down, only the party that came through arrives, all together.
+    if (opts.party) {
+      opts.party.forEach((p, i) => {
+        const w = new Wanderer(i, p.kind, p.name, 0, this.level.cells);
+        w.voice = p.voice;
+        w.player = p.player;
+        this.wanderers.push(w);
+      });
+      return;
+    }
 
     // Players take the first slots and enter at dusk; AI wanderers fill the rest
     // (always at least three prey) and drift in over the first minute.
@@ -262,17 +310,27 @@ export class Game {
     // End of night.
     const allIn = this.wanderers.every((w) => w.entered);
     const anyLeft = this.wanderers.some((w) => w.active);
-    if (this.t >= CFG.NIGHT_SECONDS || (allIn && !anyLeft)) {
-      const stars = CFG.STARS.filter((s) => this.score >= s).length;
-      this.result = {
-        score: this.score,
-        quota: CFG.QUOTA,
-        stars,
-        caught: this.wanderers.filter((w) => w.caught).length,
-        escaped: this.wanderers.filter((w) => w.escaped).length,
-        reason: this.t >= CFG.NIGHT_SECONDS ? 'dawn' : 'empty',
-      };
-    }
+    if (this.t >= CFG.NIGHT_SECONDS || (allIn && !anyLeft)) this.finish(this.t >= CFG.NIGHT_SECONDS ? 'dawn' : 'empty');
+  }
+
+  /**
+   * End this level now. Whoever already found an exit carries on down; anyone
+   * still wandering it is lost with it.
+   */
+  finish(reason: 'dawn' | 'empty') {
+    if (this.result) return this.result;
+    const out = this.wanderers.filter((w) => w.escaped);
+    this.result = {
+      score: this.score,
+      quota: CFG.QUOTA,
+      stars: CFG.STARS.filter((s) => this.score >= s).length,
+      caught: this.wanderers.filter((w) => w.caught).length,
+      escaped: out.length,
+      reason,
+      depth: this.depth,
+      survivors: out.map((w) => ({ name: w.name, kind: w.kind, voice: w.voice, player: w.player })),
+    };
+    return this.result;
   }
 
   private enter(w: Wanderer) {

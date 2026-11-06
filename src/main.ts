@@ -1,7 +1,7 @@
 import './style.css';
 import { Sound } from './audio';
 import { CFG } from './config';
-import { Game, GameEvents, rotateYaw } from './game';
+import { Game, GameEvents, levelName, PartyMember, rotateYaw } from './game';
 import { Lobby, StartMsg } from './lobby';
 import { MonsterAI } from './monsterAI';
 import { Net } from './net/client';
@@ -101,13 +101,17 @@ let huntCanvas = $('hunt') as HTMLCanvasElement;
 const senseCanvas = $('sense') as HTMLCanvasElement;
 let S: Session;
 
-function makeSession(seed: string, role: Role, slot: number, net: Net | null, players?: string[]): Session {
+/**
+ * A level of a run. `seed` is the run's seed; deeper levels pass their depth
+ * and the party that came down from the level above.
+ */
+function makeSession(seed: string, role: Role, slot: number, net: Net | null, players?: string[], depth = 1, party: PartyMember[] | null = null): Session {
   const events: GameEvents = {
     sound: (k, x, z, l, who) => S?.sound.play(k, x, z, l, who),
     caption: (text, w) => caption(text, w ? w.name : ''),
     toast,
   };
-  const game = new Game(seed, events, { players });
+  const game = new Game(seed, events, { players, depth, party: party ?? undefined });
   const world = new World3D(game, huntCanvas, lowGfx);
   const sense = new SenseView(senseCanvas, game);
   const sound = new Sound(game, world.camera, world.scene);
@@ -117,7 +121,7 @@ function makeSession(seed: string, role: Role, slot: number, net: Net | null, pl
   };
   world.footage = footage;
   $('nightshot').hidden = true;
-  if (role === 'human') world.viewer = { role: 'human', slot };
+  if (role === 'human' && slot >= 0) world.viewer = { role: 'human', slot };
   const s: Session = { net, game, world, sense, sound, role, slot, seed, spectating: false, placed: role !== 'human', sendT: 0, humans: players?.length ?? 0, ai: null, off: null };
   if (import.meta.env.DEV) Object.assign(window, { hum: s });
   return s;
@@ -136,7 +140,7 @@ function endSession() {
 const self = () => (S.role === 'human' ? S.game.wanderers[S.slot] : null);
 
 S = makeSession(urlSeed || randomSeed(), 'monster', -1, null);
-$('seedline').textContent = `Solo night · seed ${S.seed}`;
+$('seedline').textContent = `Solo run · seed ${S.seed}`;
 $('quota').textContent = String(CFG.QUOTA);
 
 // ---- Modes and views ----
@@ -231,23 +235,37 @@ function startSolo() {
 }
 
 let soloReason = '';
-/** Solo as a human, the night is over for you once you're out of it. */
+/**
+ * Solo as a human, the level is over for you once you're out of it. Found an
+ * exit: you go down, with whoever got out before you. Taken: the run is over.
+ */
 function soloOut(me: { caught: boolean }) {
   const g = S.game;
-  const ws = g.wanderers;
-  g.result = {
-    score: g.score, quota: CFG.QUOTA, stars: 0, reason: 'empty',
-    caught: ws.filter((w) => w.caught).length, escaped: ws.filter((w) => w.escaped).length,
-  };
+  const r = g.finish('empty');
+  if (me.caught) g.result = { ...r, survivors: [] };
   S.spectating = true;
   soloReason = me.caught ? 'It found you' : 'You found an exit';
   if (me.caught) showCatch('TAKEN');
   else showEnd();
 }
 
+/** Solo: the survivors of the level just ended arrive in the next one, and so does the monster. */
+function goDeeper() {
+  const r = S.game.result;
+  if (!r || !r.survivors.length || S.net) return;
+  const { seed, role } = S;
+  const players = r.survivors.filter((p) => p.player).map((p) => p.name);
+  endSession();
+  S = makeSession(seed, role, role === 'human' ? 0 : -1, null, players, r.depth + 1, r.survivors);
+  if (role === 'human') S.ai = new MonsterAI(S.game);
+  soloReason = '';
+  beginPlay();
+  toast(`${levelName(S.game.depth)}`);
+}
+
 function startOnline(msg: StartMsg) {
   endSession();
-  S = makeSession(msg.seed, msg.role, msg.slot, lobby.net, msg.players);
+  S = makeSession(msg.seed, msg.role, msg.slot, lobby.net, msg.players, msg.depth, msg.party);
   const net = lobby.net;
   S.off = net.on((m) => {
     const g = S.game;
@@ -281,21 +299,25 @@ function startOnline(msg: StartMsg) {
         break;
       case 'end':
         g.result = m.result;
-        showEnd(m.reason);
+        showEnd(m.reason, m.next);
         break;
     }
   });
   net.onClose = () => {
     lobby.lost();
     if (mode === 'over' || !S.net) return;
-    const ws = S.game.wanderers;
-    S.game.result = {
-      score: S.game.score, quota: CFG.QUOTA, stars: 0, reason: 'empty',
-      caught: ws.filter((w) => w.caught).length, escaped: ws.filter((w) => w.escaped).length,
-    };
+    S.game.result = { ...S.game.finish('empty'), survivors: [] };
     showEnd('Lost connection to the game server');
   };
   beginPlay();
+  // A human who didn't get out of the level above watches the rest of the run.
+  if (S.role === 'human' && S.slot < 0) {
+    S.spectating = true;
+    setRoleClass('spectator');
+    $('spectate').hidden = false;
+    $('spectate').textContent = `You were lost on the level above. Watching the others on ${levelName(S.game.depth)}.`;
+    setView('sense');
+  } else toast(levelName(S.game.depth));
 }
 
 /** Something the server's game raised this tick. */
@@ -371,8 +393,8 @@ function spectate(how: 'taken' | 'escaped') {
   if (how === 'taken') showCatch('TAKEN');
   $('spectate').hidden = false;
   $('spectate').textContent = how === 'taken'
-    ? 'You were taken. Watching the rest of the night.'
-    : 'You escaped. Watching the rest of the night.';
+    ? 'You were taken. Watching the rest of the run.'
+    : 'You found an exit. Watching until this level ends; then you go deeper.';
   setView('sense');
 }
 
@@ -553,6 +575,7 @@ $('multi').addEventListener('click', () => {
   $('title').hidden = true;
   lobby.openMenu();
 });
+$('deeper').addEventListener('click', goDeeper);
 $('replay').addEventListener('click', () => { location.search = `?seed=${encodeURIComponent(S.seed)}`; });
 $('newnight').addEventListener('click', () => { location.search = `?seed=${encodeURIComponent(randomSeed())}`; });
 $('tolobby').addEventListener('click', () => {
@@ -601,7 +624,8 @@ function updateHud() {
   const g = S.game;
   $('clock').textContent = clockText(g.t);
   if (camShown) updateCam(g.t);
-  $('sub').textContent = S.net ? `Online · ${S.role === 'monster' ? 'you are the monster' : 'you are human'}` : `Night 1 · Level 0 · seed ${S.seed}`;
+  const lvl = levelName(g.depth);
+  $('sub').textContent = S.net ? `Online · ${lvl} · ${S.role === 'monster' ? 'you are the monster' : 'you are human'}` : `${lvl} · seed ${S.seed}`;
   const stars = CFG.STARS.filter((s) => g.score >= s).length;
   $('stars').textContent = S.role === 'monster' ? '★'.repeat(stars) + '☆'.repeat(3 - stars) : '';
   const me = self();
@@ -666,7 +690,12 @@ function updateHud() {
   }
 }
 
-function showEnd(reason = soloReason) {
+/**
+ * A level is over. If anyone got out, the run goes on: solo, a button takes you
+ * down after them; online, the server starts the next level itself (`next`).
+ * Nobody out: the run is over, and this says how deep it got.
+ */
+function showEnd(reason = soloReason, next?: number) {
   const r = S.game.result!;
   mode = 'over';
   document.exitPointerLock();
@@ -674,17 +703,31 @@ function showEnd(reason = soloReason) {
   const fed = r.score >= r.quota;
   const me = self();
   const online = !!S.net;
-  $('endtitle').textContent = me
-    ? me.escaped ? 'You escaped' : me.caught ? 'You were taken' : fed ? 'It fed' : 'You survived'
-    : fed ? 'Fed' : 'Hungry';
-  $('endsummary').textContent = `${reason ? `${reason}. ` : r.reason === 'dawn' ? 'Dawn came. ' : 'The level is empty. '}` +
-    `${me ? 'The thing' : 'You'} harvested ${r.score} fear of ${r.quota} needed · caught ${r.caught} · escaped ${r.escaped}.` +
-    (online ? (fed ? ' The monster wins.' : ' The humans win.') : fed || me ? '' : ' Replay the night.');
-  $('endstars').textContent = me ? '' : '★'.repeat(r.stars) + '☆'.repeat(3 - r.stars);
-  ($('end').querySelector('.questions') as HTMLElement).hidden = !!me;
-  $('replay').hidden = online;
-  $('newnight').hidden = online;
-  $('tolobby').hidden = !online;
+  const goesOn = online ? next !== undefined : r.survivors.length > 0;
+  const here = levelName(r.depth);
+  const names = r.survivors.map((p) => p.name);
+  const who = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
+  const tally = `${me ? 'The thing' : 'You'} harvested ${r.score} fear of ${r.quota} · caught ${r.caught} · escaped ${r.escaped}.`;
+  if (goesOn) {
+    const meDown = !!me && r.survivors.some((p) => p.player && p.name === me.name);
+    $('endtitle').textContent = me ? (meDown ? 'Deeper' : 'Left behind') : 'They went deeper';
+    $('endsummary').textContent = `${reason ? `${reason}. ` : r.reason === 'dawn' ? 'Dawn came. ' : ''}` +
+      `${who} got out of ${here}. ${tally}` +
+      (online ? ` ${levelName(next!)} starts in a moment.` : '');
+  } else {
+    $('endtitle').textContent = me
+      ? me.caught ? 'You were taken' : fed ? 'It fed' : 'You were lost'
+      : fed ? 'Fed' : 'Hungry';
+    $('endsummary').textContent = `${reason ? `${reason}. ` : r.reason === 'dawn' ? 'Dawn came. ' : 'The level is empty. '}` +
+      `Nobody got out. The descent ended on ${here}. ${tally}` +
+      (online ? (fed ? ' The monster wins.' : ' The humans win.') : '');
+  }
+  $('endstars').textContent = me || goesOn ? '' : '★'.repeat(r.stars) + '☆'.repeat(3 - r.stars);
+  ($('end').querySelector('.questions') as HTMLElement).hidden = !!me || goesOn;
+  $('deeper').hidden = online || !goesOn;
+  $('replay').hidden = online || goesOn;
+  $('newnight').hidden = online || goesOn;
+  $('tolobby').hidden = !online || goesOn;
   $('end').hidden = false;
 }
 
