@@ -18,6 +18,7 @@ const PANEL_OFF = new THREE.Color(0.03, 0.03, 0.035);
 const FOG_LIT = new THREE.Color(0x3a321a);
 const FOG_DARK = new THREE.Color(0x040507);
 const POOL = 8; // real point lights, moved to the nearest visible fixtures each frame
+const POOL_LOW = 4; // on low graphics: every light costs every lit pixel, and tablets feel it
 const POOL_REACH = 18;
 
 // Film grain, a slight colour fringe and a vignette: the monster's eyes.
@@ -124,16 +125,27 @@ const FootageShader = {
       // Tape can't hold much detail: soft luma, and colour smeared out to the right.
       vec2 px = 1.0 / res;
       float soft = 1.3 + focus * 5.0;
-      float y = toYiq(texture2D(tDiffuse, uv).rgb).x * 0.4
-        + toYiq(texture2D(tDiffuse, uv + vec2(px.x * soft, 0.0)).rgb).x * 0.2
-        + toYiq(texture2D(tDiffuse, uv - vec2(px.x * soft, 0.0)).rgb).x * 0.2
-        + toYiq(texture2D(tDiffuse, uv + vec2(0.0, px.y * soft)).rgb).x * 0.1
-        + toYiq(texture2D(tDiffuse, uv - vec2(0.0, px.y * soft)).rgb).x * 0.1;
-      vec2 iq = vec2(0.0);
-      for (int i = 0; i < 6; i++) iq += toYiq(texture2D(tDiffuse, uv + vec2(px.x * (2.0 + float(i) * 3.0 + glitch * 12.0), 0.0)).rgb).yz;
-      iq /= 6.0;
-      // A little sharpening halo, like a cheap camera's edge enhancement.
       float yc = toYiq(texture2D(tDiffuse, uv).rgb).x;
+      #ifdef LOW
+        // Fewer taps on weak GPUs: the look survives, the cost roughly halves.
+        float y = yc * 0.5
+          + toYiq(texture2D(tDiffuse, uv + vec2(px.x * soft, 0.0)).rgb).x * 0.25
+          + toYiq(texture2D(tDiffuse, uv - vec2(px.x * soft, 0.0)).rgb).x * 0.25;
+        #define CHROMA 3
+        #define CSTEP 6.0
+      #else
+        float y = yc * 0.4
+          + toYiq(texture2D(tDiffuse, uv + vec2(px.x * soft, 0.0)).rgb).x * 0.2
+          + toYiq(texture2D(tDiffuse, uv - vec2(px.x * soft, 0.0)).rgb).x * 0.2
+          + toYiq(texture2D(tDiffuse, uv + vec2(0.0, px.y * soft)).rgb).x * 0.1
+          + toYiq(texture2D(tDiffuse, uv - vec2(0.0, px.y * soft)).rgb).x * 0.1;
+        #define CHROMA 6
+        #define CSTEP 3.0
+      #endif
+      vec2 iq = vec2(0.0);
+      for (int i = 0; i < CHROMA; i++) iq += toYiq(texture2D(tDiffuse, uv + vec2(px.x * (2.0 + float(i) * CSTEP + glitch * 12.0), 0.0)).rgb).yz;
+      iq /= float(CHROMA);
+      // A little sharpening halo, like a cheap camera's edge enhancement.
       y += (yc - y) * 0.6;
       vec3 col = toRgb(vec3(y, iq * 0.78));
 
@@ -325,6 +337,20 @@ export class World3D {
   camera: THREE.PerspectiveCamera;
   private composer: EffectComposer;
   private hunt: ShaderPass;
+  private bloom: UnrealBloomPass;
+  /** Low graphics: see quality.ts. */
+  low = false;
+  private poolSize = POOL;
+  private exitGlows: { group: THREE.Group; light: THREE.PointLight }[] = [];
+  private normalMaps: [THREE.MeshStandardMaterial, THREE.Texture][] = [];
+  /** Render resolution as a fraction of the most we'd draw, lowered while frames run slow. */
+  private resScale = 1;
+  private frameAvg = 1 / 60;
+  private lastFrame = 0;
+  private judgeT = 0;
+  private goodFor = 0;
+  /** Brightness attributes need uploading (lights changed, or walls were rebuilt). */
+  private brightDirty = true;
   private footagePass: ShaderPass;
   /** The found-footage camcorder look, on or off. */
   footage = true;
@@ -375,9 +401,10 @@ export class World3D {
   private creature = new Creature();
   private spots: THREE.SpotLight[] = [];
 
-  constructor(private game: Game, canvas: HTMLCanvasElement) {
+  constructor(private game: Game, canvas: HTMLCanvasElement, low = false) {
     const L = game.level;
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+    // No MSAA: the scene is drawn into the composer's own targets, so the canvas's would only smooth the final full-screen quad.
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -552,7 +579,8 @@ export class World3D {
 
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.composer.addPass(new UnrealBloomPass(new THREE.Vector2(window.innerWidth / 2, window.innerHeight / 2), 0.4, 0.5, 1.4));
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth / 2, window.innerHeight / 2), 0.4, 0.5, 1.4);
+    this.composer.addPass(this.bloom);
     this.hunt = new ShaderPass(HuntShader);
     this.composer.addPass(this.hunt);
     this.composer.addPass(new OutputPass());
@@ -560,7 +588,76 @@ export class World3D {
     this.composer.addPass(this.footagePass);
     this.setFootageRes();
 
+    this.scene.traverse((o) => {
+      const mat = (o as THREE.Mesh).material;
+      if (mat instanceof THREE.MeshStandardMaterial && mat.normalMap && !this.normalMaps.some(([m]) => m === mat)) this.normalMaps.push([mat, mat.normalMap]);
+    });
+    this.setLow(low);
     this.rebuildWalls();
+  }
+
+  /**
+   * Switch low graphics on or off. Changing the light count makes three.js
+   * rebuild its shaders, so expect one hitch.
+   */
+  setLow(low: boolean) {
+    this.low = low;
+    this.poolSize = low ? POOL_LOW : POOL;
+    this.pool.forEach((l, i) => {
+      if (i < this.poolSize) this.scene.add(l);
+      else this.scene.remove(l);
+    });
+    // The exit signs still glow; they just stop lighting the wall around them.
+    for (const { group, light } of this.exitGlows) {
+      if (low) group.remove(light);
+      else group.add(light);
+    }
+    for (const [m, n] of this.normalMaps) {
+      m.normalMap = low ? null : n;
+      m.needsUpdate = true;
+    }
+    this.bloom.enabled = !low;
+    const fm = this.footagePass.material;
+    if (low) fm.defines.LOW = '';
+    else delete fm.defines.LOW;
+    fm.needsUpdate = true;
+    this.dust.geometry.setDrawRange(0, low ? 250 : Infinity);
+    this.resScale = 1;
+    this.goodFor = 0;
+    this.applyPixelRatio();
+  }
+
+  private applyPixelRatio() {
+    const max = Math.min(window.devicePixelRatio, this.low ? 1 : 1.5);
+    const ratio = Math.max(0.5, max * this.resScale);
+    if (Math.abs(ratio - this.renderer.getPixelRatio()) < 0.01) return;
+    this.renderer.setPixelRatio(ratio);
+    this.composer.setPixelRatio(ratio);
+    this.setFootageRes();
+  }
+
+  /** Drop the render resolution while frames run slow; win it back once they're steady. */
+  private adaptResolution(now: number) {
+    const dt = (now - this.lastFrame) / 1000;
+    this.lastFrame = now;
+    if (dt <= 0 || dt > 0.25) return; // first frame, or back from a hidden tab
+    this.frameAvg += (dt - this.frameAvg) * 0.05;
+    this.judgeT += dt;
+    if (this.judgeT < 1.5) return;
+    this.judgeT = 0;
+    const floor = this.low ? 0.6 : 0.7;
+    if (this.frameAvg > 1 / 42 && this.resScale > floor) {
+      this.resScale = Math.max(floor, this.resScale * 0.85);
+      this.goodFor = 0;
+      this.applyPixelRatio();
+    } else if (this.frameAvg < 1 / 56) {
+      this.goodFor += 1.5;
+      if (this.goodFor >= 6 && this.resScale < 1) {
+        this.resScale = Math.min(1, this.resScale * 1.1);
+        this.goodFor = 0;
+        this.applyPixelRatio();
+      }
+    } else this.goodFor = 0;
   }
 
   /** The Pitfalls' shafts: carpet-edged walls that drop away into black, with no bottom you can see. */
@@ -628,6 +725,7 @@ export class World3D {
       const glow = new THREE.PointLight(0x4dff6e, 2.2, 5, 2);
       glow.position.set(0, 2.3, 0.4);
       g.add(glow);
+      this.exitGlows.push({ group: g, light: glow });
       // Against the wall on side e.dir, facing into the cell.
       const off = L.CS / 2 - 0.1;
       const dx = [0, 1, 0, -1][e.dir], dz = [-1, 0, 1, 0][e.dir];
@@ -715,6 +813,7 @@ export class World3D {
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.composer.setSize(window.innerWidth, window.innerHeight);
+    this.applyPixelRatio();
     this.setFootageRes();
   }
 
@@ -804,6 +903,7 @@ export class World3D {
     }
     fw.needsUpdate = cw.needsUpdate = true;
     this.builtVersion = L.version;
+    this.brightDirty = true;
   }
 
   /** Flickering brightness per circuit, from the game's blackout timers. */
@@ -826,22 +926,19 @@ export class World3D {
 
     const circ = new Float32Array(L.circuitCount);
     for (let i = 0; i < circ.length; i++) circ[i] = this.circuitLevel(i, t);
-    const setB = (mesh: THREE.InstancedMesh, i: number, v: number) =>
-      (mesh.geometry.getAttribute('aBright') as THREE.InstancedBufferAttribute).setX(i, v);
+    // Ease each cell towards its circuit's level, snapping once close, so a
+    // settled level costs nothing: no attribute or texture uploads at all.
+    let changed = this.brightDirty;
     for (let c = 0; c < L.cells; c++) {
-      this.cellBright[c] += (circ[L.circuit[c]] - this.cellBright[c]) * 0.35;
-      setB(this.floor, c, this.cellBright[c]);
-      setB(this.ceil, c, this.cellBright[c]);
+      const target = circ[L.circuit[c]];
+      let v = this.cellBright[c];
+      if (v === target) continue;
+      v += (target - v) * 0.35;
+      if (Math.abs(target - v) < 0.004) v = target;
+      this.cellBright[c] = v;
+      changed = true;
     }
-    const edgeB = (k: number) => {
-      const [a, b] = L.edgeCells(k);
-      return Math.max(a >= 0 ? this.cellBright[a] : 0, b >= 0 ? this.cellBright[b] : 0);
-    };
-    this.wallKeys.forEach((k, i) => setB(this.walls, i, edgeB(k)));
-    this.trimKeys.forEach((k, i) => setB(this.trim, i, edgeB(k)));
-    const texData = this.cellTex.image.data as Uint8Array;
-    for (let c = 0; c < L.cells; c++) texData[c * 4] = Math.round(this.cellBright[c] * 255);
-    this.cellTex.needsUpdate = true;
+    if (changed) this.uploadBrightness();
 
     // Doors swing towards where the game says they are; they slam faster than they open.
     for (const v of this.doorViews) {
@@ -849,10 +946,6 @@ export class World3D {
       const speed = target === 0 ? 5 : 2.4;
       v.cur += Math.max(-speed * dt, Math.min(speed * dt, target - v.cur));
       v.pivot.rotation.y = v.base + v.cur;
-    }
-    this.pillarCells.forEach((c, i) => setB(this.pillars, i, this.cellBright[c]));
-    for (const m of [this.floor, this.ceil, this.walls, this.trim, this.pillars]) {
-      m.geometry.getAttribute('aBright').needsUpdate = true;
     }
 
     // Panels: on with their circuit, plus the odd tired flicker.
@@ -972,6 +1065,28 @@ export class World3D {
     }
   }
 
+  private uploadBrightness() {
+    const L = this.game.level;
+    this.brightDirty = false;
+    const attr = (mesh: THREE.InstancedMesh) => mesh.geometry.getAttribute('aBright') as THREE.InstancedBufferAttribute;
+    const fb = attr(this.floor), cb = attr(this.ceil), wb = attr(this.walls), tb = attr(this.trim), pb = attr(this.pillars);
+    const texData = this.cellTex.image.data as Uint8Array;
+    for (let c = 0; c < L.cells; c++) {
+      fb.setX(c, this.cellBright[c]);
+      cb.setX(c, this.cellBright[c]);
+      texData[c * 4] = Math.round(this.cellBright[c] * 255);
+    }
+    const edgeB = (k: number) => {
+      const [a, b] = L.edgeCells(k);
+      return Math.max(a >= 0 ? this.cellBright[a] : 0, b >= 0 ? this.cellBright[b] : 0);
+    };
+    this.wallKeys.forEach((k, i) => wb.setX(i, edgeB(k)));
+    this.trimKeys.forEach((k, i) => tb.setX(i, edgeB(k)));
+    this.pillarCells.forEach((c, i) => pb.setX(i, this.cellBright[c]));
+    for (const a of [fb, cb, wb, tb, pb]) a.needsUpdate = true;
+    this.cellTex.needsUpdate = true;
+  }
+
   /** Move the light pool to the nearest lit fixtures the camera can see. */
   private placeLights(cx: number, cz: number) {
     const L = this.game.level;
@@ -988,7 +1103,7 @@ export class World3D {
     for (const k of cand) {
       const p = L.center(this.panelCells[k.i]);
       if (k.d > L.CS * 1.2 && !L.los(cx, cz, p.x, p.z)) continue;
-      if (chosen.length === POOL) { cutoff = k.d; break; }
+      if (chosen.length === this.poolSize) { cutoff = k.d; break; }
       chosen.push(k);
     }
     this.pool.forEach((light, j) => {
@@ -1032,6 +1147,7 @@ export class World3D {
   }
 
   render() {
+    this.adaptResolution(performance.now());
     this.composer.render();
   }
 

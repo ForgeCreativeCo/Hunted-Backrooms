@@ -6,6 +6,7 @@ import { Lobby, StartMsg } from './lobby';
 import { MonsterAI } from './monsterAI';
 import { Net } from './net/client';
 import { applySnapshot, NetEvent, Role } from './net/protocol';
+import { loadLowGfx, saveLowGfx } from './quality';
 import { randomSeed } from './rng';
 import { Aim, SenseView } from './sense';
 import { isTouchDevice, TouchControls } from './touch';
@@ -82,6 +83,20 @@ for (const box of footageBoxes) {
   });
 }
 
+// ---- Low graphics setting (on by default for weak tablets) ----
+
+let lowGfx = loadLowGfx();
+const lowGfxBoxes = [...document.querySelectorAll<HTMLInputElement>('.opt-lowgfx')];
+for (const box of lowGfxBoxes) {
+  box.checked = lowGfx;
+  box.addEventListener('change', () => {
+    lowGfx = box.checked;
+    for (const b of lowGfxBoxes) b.checked = lowGfx;
+    saveLowGfx(lowGfx);
+    if (S) S.world.setLow(lowGfx);
+  });
+}
+
 let huntCanvas = $('hunt') as HTMLCanvasElement;
 const senseCanvas = $('sense') as HTMLCanvasElement;
 let S: Session;
@@ -93,7 +108,7 @@ function makeSession(seed: string, role: Role, slot: number, net: Net | null, pl
     toast,
   };
   const game = new Game(seed, events, { players });
-  const world = new World3D(game, huntCanvas);
+  const world = new World3D(game, huntCanvas, lowGfx);
   const sense = new SenseView(senseCanvas, game);
   const sound = new Sound(game, world.camera, world.scene);
   world.onNightVision = (on) => {
