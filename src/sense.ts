@@ -142,6 +142,24 @@ export class SenseView {
       ctx.fillText('EXIT', this.sx(p.x), this.sy(p.z) + 3);
     }
 
+    // Fake exits: the monster knows they lead nowhere.
+    for (const e of L.fakeExits) {
+      const seg = L.edgeSegment(L.edgeOf(e.cell, e.dir));
+      ctx.strokeStyle = 'rgba(77, 255, 110, 0.35)';
+      ctx.lineWidth = 3;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(this.sx(seg.x1), this.sy(seg.z1));
+      ctx.lineTo(this.sx(seg.x2), this.sy(seg.z2));
+      ctx.stroke();
+      ctx.setLineDash([]);
+      const p = L.center(e.cell);
+      ctx.fillStyle = 'rgba(77, 255, 110, 0.45)';
+      ctx.font = '600 9px ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('FALSE', this.sx(p.x), this.sy(p.z) + 3);
+    }
+
     // Chalk marks glow.
     ctx.save();
     ctx.shadowColor = '#cfe8ff';

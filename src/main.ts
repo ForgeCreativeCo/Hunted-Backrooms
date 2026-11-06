@@ -640,12 +640,12 @@ function updateHud() {
     $('exitclock').textContent = `EXITS CLOSE IN ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
     $('exitclock').classList.toggle('last', s <= 10);
   }
-  const stars = CFG.STARS.filter((s) => g.score >= s).length;
+  const stars = g.stars.filter((s) => g.score >= s).length;
   $('stars').textContent = S.role === 'monster' ? '★'.repeat(stars) + '☆'.repeat(3 - stars) : '';
   const me = self();
 
   if (me) {
-    $('score').textContent = `IT HAS FED ${g.score} / ${CFG.QUOTA}`;
+    $('score').textContent = `IT HAS FED ${g.score} / ${g.quota}`;
     $('roster').innerHTML = '';
     // Online you know who the other players are; solo, everyone lost in here.
     for (const w of S.net ? g.wanderers.slice(0, S.humans) : g.wanderers.filter((w) => w.entered)) {
@@ -668,7 +668,7 @@ function updateHud() {
     return;
   }
 
-  $('score').textContent = `FEAR ${g.score} / ${CFG.QUOTA}`;
+  $('score').textContent = `FEAR ${g.score} / ${g.quota}`;
   $('roster').innerHTML = '';
   for (const w of g.wanderers) {
     const line = document.createElement('div');

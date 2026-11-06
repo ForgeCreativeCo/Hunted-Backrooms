@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { CFG } from '../src/config';
 import { Game, MonsterCarry, NightResult, PartyMember } from '../src/game';
-import { placeName } from '../src/levels';
+import { dialsFor, placeName } from '../src/levels';
 import { ClientMsg, encodeSnapshot, LobbyPlayer, NetEvent, Role, RoomInfo, ServerMsg } from '../src/net/protocol';
 import { randomSeed } from '../src/rng';
 
@@ -307,7 +307,7 @@ function endGame(room: Room, reason?: string) {
 
 /** A result to show when a run is abandoned between levels, with no level running. */
 function lastResult(run: { depth: number; carry: MonsterCarry | null }): NightResult {
-  return { score: 0, quota: CFG.QUOTA, stars: 0, reason: 'empty', caught: 0, escaped: 0, depth: run.depth, survivors: [], carry: run.carry ?? { dread: 0, banked: 0 } };
+  return { score: 0, quota: dialsFor(run.depth).quota, stars: 0, reason: 'empty', caught: 0, escaped: 0, depth: run.depth, survivors: [], carry: run.carry ?? { dread: 0, banked: 0 } };
 }
 
 function gameMsg(c: Client, msg: ClientMsg) {

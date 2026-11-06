@@ -22,14 +22,26 @@ To play with people on other machines, use the production server below: it serve
 
 A run is a descent through the Backrooms. Every exit leads one level deeper, and nothing leads back.
 
-- The first wanderer through an exit starts the exits dying: every exit sign stutters, and everyone (monster too) sees a 45-second countdown. Anyone who reaches any exit before it ends goes too.
+- The first wanderer through an exit starts the exits dying: every exit sign stutters, and everyone (monster too) sees a countdown (45 seconds on the first level, shorter deeper down). Anyone who reaches any exit before it ends goes too.
 - A level ends when the exits close, when nobody is left wandering it, or at dawn. Whoever got out goes down to the next level; anyone still inside is lost with it.
 - Only the people who got out arrive in the next level, together. Nobody new joins below the first level.
-- What carries over: fear (eased by 30%), flashlight battery, and chalk. Each wanderer has 12 chalk arrows for the whole run. Stamina resets. The monster keeps half its dread (never less than a level's usual start) and banks the fear it harvests across the run.
+- What carries over: fear (eased by 30%), flashlight battery, and chalk. Each wanderer has 12 chalk arrows for the whole run. Stamina resets. The monster keeps half its dread (never less than it starts that depth with) and banks the fear it harvests across the run.
 - The run is over when a level ends with nobody out. The end screen says how deep it got.
 - Solo as the monster, **Follow them down** takes you after the survivors. Solo as a human, finding an exit lets you watch the others try for the exits until they close; then you go down together.
 - Online, the next level starts for the whole room six seconds after the last one ends. A human player who didn't get out watches the rest of the run.
 - Each level is one of a set of described levels (`src/levels.ts`): how it's laid out, its air, light and hum, and the line shown as you arrive. The main way down is Level 0, Level 1, Level 6, and round again (Levels 2 to 5 will slot in before Level 6). Below the first level, any exit has a 1 in 5 chance of leading to a side level instead, never two in a row: the Poolrooms or the Street. After a side level the run carries on down the main way.
+- Under every level, the run tightens with depth. The numbers move in a straight line between these depths and stay put below depth 12 (`dialsFor` in `src/levels.ts`; starting guesses, not tuned):
+
+  | Depth | 1 | 4 | 8 | 12+ |
+  | --- | --- | --- | --- | --- |
+  | Real exits | 2 | 2 | 1 | 1 |
+  | Fake exits | 0 | 1 | 2 | 3 |
+  | Lit circuits | 100% | 85% | 65% | 50% |
+  | Monster's starting dread | 40 | 55 | 70 | 80 |
+  | Monster's fear quota | 120 | 100 | 80 | 60 |
+  | Exit countdown | 45 s | 40 s | 30 s | 25 s |
+
+- A fake exit looks and glows like a real one, but its door opens onto brick. Finding one out is a fright, and AI wanderers who do give up on it and look elsewhere. The monster's map shows fake exits dashed and marked FALSE. The quota (and the stars with it) shrinks as the humans dwindle, so a level stays winnable for the monster.
 - Which level each depth is comes from the run's seed, and each level's layout from the seed and its depth (`seed:L2`, `seed:L3` …), so everyone in a room walks the same building. The HUD shows the level's name and the depth; depth is the run's score.
 
 ## The levels

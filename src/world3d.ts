@@ -446,6 +446,8 @@ export class World3D {
   /** The exit signs' shared material, so they can stutter together while the exits die. */
   private exitSignMat: THREE.MeshBasicMaterial | null = null;
   private exitSignOff = false;
+  /** Fake exits' doors, which swing open onto brick when someone comes up to them. */
+  private fakeDoors: { leaf: THREE.Group; x: number; z: number; cur: number }[] = [];
   private normalMaps: [THREE.MeshStandardMaterial, THREE.Texture][] = [];
   /** Render resolution as a fraction of the most we'd draw, lowered while frames run slow. */
   private resScale = 1;
@@ -895,7 +897,9 @@ export class World3D {
     const barMat = new THREE.MeshStandardMaterial({ color: 0xb0b0aa, roughness: 0.25, metalness: 0.9 });
     const signMat = new THREE.MeshBasicMaterial({ map: T.exitSign(), color: new THREE.Color(2.2, 2.2, 2.2) });
     this.exitSignMat = signMat;
-    for (const e of L.exits) {
+    const brickMat = new THREE.MeshStandardMaterial({ map: T.brick(), roughness: 0.9 });
+    for (const e of [...L.exits, ...L.fakeExits]) {
+      const fake = L.fakeCells.has(e.cell);
       const p = L.center(e.cell);
       const g = new THREE.Group();
       const add = (geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number) => {
@@ -903,12 +907,26 @@ export class World3D {
         m.position.set(x, y, z);
         g.add(m);
       };
-      add(new THREE.BoxGeometry(1.0, 2.1, 0.05), doorMat, 0, 1.05, 0.02);
+      // A fake one's door swings open (on a hinge at its left edge) onto brick.
+      const leaf = fake ? new THREE.Group() : g;
+      const lx = fake ? 0.5 : 0;
+      const addLeaf = (geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number) => {
+        const m = new THREE.Mesh(geo, mat);
+        m.position.set(x + lx, y, z);
+        leaf.add(m);
+      };
+      if (fake) {
+        leaf.position.set(-0.5, 0, 0.045);
+        g.add(leaf);
+        add(new THREE.BoxGeometry(1.0, 2.1, 0.01), brickMat, 0, 1.05, -0.01);
+        this.fakeDoors.push({ leaf, x: p.x, z: p.z, cur: 0 });
+      }
+      addLeaf(new THREE.BoxGeometry(1.0, 2.1, 0.05), doorMat, 0, 1.05, fake ? 0 : 0.02);
       add(new THREE.BoxGeometry(0.08, 2.2, 0.1), frameMat, -0.54, 1.1, 0.03);
       add(new THREE.BoxGeometry(0.08, 2.2, 0.1), frameMat, 0.54, 1.1, 0.03);
       add(new THREE.BoxGeometry(1.16, 0.08, 0.1), frameMat, 0, 2.18, 0.03);
-      add(new THREE.BoxGeometry(0.8, 0.05, 0.06), barMat, 0, 1.0, 0.08);
-      add(new THREE.BoxGeometry(0.05, 0.4, 0.04), barMat, 0.4, 1.3, 0.06);
+      addLeaf(new THREE.BoxGeometry(0.8, 0.05, 0.06), barMat, 0, 1.0, fake ? 0.06 : 0.08);
+      addLeaf(new THREE.BoxGeometry(0.05, 0.4, 0.04), barMat, 0.4, 1.3, fake ? 0.04 : 0.06);
       add(new THREE.BoxGeometry(0.62, 0.24, 0.06), signMat, 0, 2.42, 0.04);
       const glow = new THREE.PointLight(0x4dff6e, 2.2, 5, 2);
       glow.position.set(0, 2.3, 0.4);
@@ -1192,11 +1210,18 @@ export class World3D {
       v.pivot.rotation.y = v.base + v.cur;
     }
 
+    // A fake exit's door swings open while anyone stands at it, showing the brick behind.
+    for (const fd of this.fakeDoors) {
+      const near = g.wanderers.some((w) => w.active && Math.hypot(w.x - fd.x, w.z - fd.z) < 1.7);
+      fd.cur += Math.max(-2 * dt, Math.min(2 * dt, (near ? 1.5 : 0) - fd.cur));
+      fd.leaf.rotation.y = -fd.cur;
+    }
+
     // The exit signs stutter once the exits are dying, worse as they near closing.
     if (this.exitSignMat) {
       let off = false;
       if (g.exitsDying) {
-        const k = 1 - Math.max(0, g.exitT) / CFG.EXIT_CLOSE;
+        const k = 1 - Math.max(0, g.exitT) / g.dials.exitClose;
         // Decided 12 times a second, so it stutters rather than strobes.
         const roll = (((Math.sin(Math.floor(t * 12) * 12.9898) * 43758.5453) % 1) + 1) % 1;
         off = g.over || roll < 0.08 + 0.45 * k;

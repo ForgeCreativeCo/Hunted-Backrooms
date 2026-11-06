@@ -143,6 +143,51 @@ export function levelFor(seed: string, depth: number): LevelDef {
   return MAIN[step % MAIN.length];
 }
 
+/**
+ * What tightens with depth, under whatever level it is. Starting guesses for
+ * playtesting, not tuned numbers.
+ */
+export interface Dials {
+  /** Real exits. */
+  exits: number;
+  /** Exits that look and glow real, but open onto brick. */
+  fakeExits: number;
+  /** Share of light circuits with power (the rest are dead from the start). */
+  lit: number;
+  /** The monster's dread as it arrives. */
+  dread: number;
+  /** Fear the monster must harvest for the level to count as its win. */
+  quota: number;
+  /** Seconds from the first one out until the exits close. */
+  exitClose: number;
+}
+
+// depth, exits, fake exits, lit, dread, quota, countdown. Between these depths
+// the dials move in a straight line; below the last they stay put.
+const DIALS: number[][] = [
+  [1, 2, 0, 1, 40, 120, 45],
+  [4, 2, 1, 0.85, 55, 100, 40],
+  [8, 1, 2, 0.65, 70, 80, 30],
+  [12, 1, 3, 0.5, 80, 60, 25],
+];
+
+export function dialsFor(depth: number): Dials {
+  const d = Math.max(1, depth);
+  let i = 0;
+  while (i < DIALS.length - 2 && d > DIALS[i + 1][0]) i++;
+  const [a, b] = [DIALS[i], DIALS[i + 1]];
+  const k = Math.min(1, (d - a[0]) / (b[0] - a[0]));
+  const at = (j: number) => a[j] + (b[j] - a[j]) * k;
+  return {
+    exits: Math.round(at(1)),
+    fakeExits: Math.round(at(2)),
+    lit: at(3),
+    dread: Math.round(at(4)),
+    quota: Math.round(at(5) / 5) * 5,
+    exitClose: Math.round(at(6)),
+  };
+}
+
 /** A level as the end screen and logs name it: "Level 0, depth 3". */
 export function placeName(seed: string, depth: number) {
   return `${levelFor(seed, depth).name}, depth ${depth}`;

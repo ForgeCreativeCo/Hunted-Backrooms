@@ -1,6 +1,6 @@
 import { CFG, Kind } from './config';
 import { Box, DX, DY, Door, Level, OPP } from './level';
-import { levelFor, type LevelDef } from './levels';
+import { dialsFor, levelFor, type Dials, type LevelDef } from './levels';
 import { RNG } from './rng';
 
 export type WState = 'explore' | 'alert' | 'flee' | 'hide' | 'escape' | 'panic' | 'chalk' | 'confused';
@@ -79,6 +79,7 @@ const LINES = {
   chalkGone: ['My arrow... it\'s gone.', 'I marked this. I KNOW I marked this.', 'Someone moved my arrow.'],
   confused: ['Wait. This wasn\'t here.', 'There was a hallway here.', 'The walls moved. Walls don\'t move.'],
   exit: ['An exit! There!', 'EXIT. Thank god.', 'I see a door!'],
+  fake: ['It\'s... bricks.', 'No. NO. It\'s a wall.', 'It doesn\'t go anywhere.', 'Why would you put a sign on a wall?'],
   scream: ['Was that... a scream?', 'Somebody\'s hurt!', 'What happened to them?'],
   panic: ['AAAAH!', 'LET ME OUT!', 'I can\'t, I can\'t, I can\'t—'],
   hide: ['Quiet. Be quiet.', 'Don\'t breathe.', 'Please don\'t find me.'],
@@ -106,6 +107,8 @@ export class Wanderer {
   visits: Float32Array;
   /** Open-wall mask of each cell when last visited, -1 if never. */
   mem: Int8Array;
+  /** Fake exits this wanderer has already found out, by cell. */
+  fakeSeen = new Set<number>();
   /** Chalk the wanderer drew, by cell. Used to notice tampering. */
   drawn = new Map<number, number>();
   pendingNext = -1;
@@ -199,16 +202,24 @@ export class Game {
   readonly depth: number;
   /** Which level of the Backrooms this is. */
   readonly def: LevelDef;
+  /** What tightens with depth: exits, lights, the monster's start and quota, the countdown. */
+  readonly dials: Dials;
+  /** Fear the monster must harvest here for the level to count as its win. */
+  get quota() { return this.dials.quota; }
+  /** Its stars, scaled to this level's quota. */
+  get stars() { return CFG.STARS.map((s) => Math.round((s * this.quota) / CFG.QUOTA)); }
 
   /** `seed` is the run's seed; this level is built from it and the depth. */
   constructor(public seed: string, public events: GameEvents, opts: GameOptions = {}) {
     this.depth = Math.max(1, opts.depth ?? 1);
+    this.dials = dialsFor(this.depth);
     this.banked = opts.carry?.banked ?? 0;
-    // The monster arrives already strong, but has to feed again.
-    if (opts.carry) this.dread = Math.max(CFG.DREAD_START, opts.carry.dread * CFG.DREAD_CARRY);
+    // The monster arrives already strong (more so deeper down), but has to feed again.
+    this.dread = this.dials.dread;
+    if (opts.carry) this.dread = Math.max(this.dials.dread, opts.carry.dread * CFG.DREAD_CARRY);
     const ls = levelSeed(seed, this.depth);
     this.def = opts.def ?? levelFor(seed, this.depth);
-    this.level = new Level(ls, this.def);
+    this.level = new Level(ls, this.def, this.dials);
     this.taken = new Uint8Array(this.level.supplies.length);
     this.rng = new RNG(ls + ':night');
     this.blackout = new Float32Array(this.level.circuitCount);
@@ -295,6 +306,19 @@ export class Game {
     this.events.toast(`${w.name} found ${what}`);
   }
 
+  /** Someone reached a fake exit: the door opens onto brick. */
+  private foundFake(w: Wanderer) {
+    w.fakeSeen.add(w.cell);
+    this.addFear(w, 15);
+    const p = this.level.center(w.cell);
+    this.events.sound('doorShut', p.x, p.z, 0.8);
+    if (w.player) return;
+    this.say(w, LINES.fake);
+    w.exitTarget = -1;
+    w.path = [];
+    this.setState(w, 'confused', 2.2);
+  }
+
   /** Is there something left in a crate in this cell? */
   supplyIn(cell: number) {
     return this.level.supplies.findIndex((s, i) => s.cell === cell && !this.taken[i]);
@@ -370,12 +394,12 @@ export class Game {
 
     // The first one out starts the exits dying; when they close, the level is over.
     if (this.exitT < 0 && this.wanderers.some((w) => w.escaped)) {
-      this.exitT = CFG.EXIT_CLOSE;
+      this.exitT = this.dials.exitClose;
       for (const e of L.exits) {
         const p = L.center(e.cell);
         this.events.sound('exitDying', p.x, p.z, 1);
       }
-      this.events.toast(`The exits are dying. ${CFG.EXIT_CLOSE} seconds.`);
+      this.events.toast(`The exits are dying. ${this.dials.exitClose} seconds.`);
     } else if (this.exitT > 0) {
       const before = this.exitT;
       this.exitT = Math.max(0, this.exitT - dt);
@@ -403,8 +427,8 @@ export class Game {
     this.exitT = 0;
     this.result = {
       score: this.score,
-      quota: CFG.QUOTA,
-      stars: CFG.STARS.filter((s) => this.score >= s).length,
+      quota: this.quota,
+      stars: this.stars.filter((s) => this.score >= s).length,
       caught: this.wanderers.filter((w) => w.caught).length,
       escaped: out.length,
       reason,
@@ -521,6 +545,8 @@ export class Game {
       this.events.toast(`${w.name} found an exit and escaped`);
       return;
     }
+
+    if (L.fakeCells.has(w.cell) && !w.fakeSeen.has(w.cell)) this.foundFake(w);
 
     L.supplies.forEach((s, i) => {
       if (!this.taken[i] && Math.hypot(s.x - w.x, s.z - w.z) < CFG.SUPPLY_REACH) this.takeSupply(w, i);
@@ -809,7 +835,8 @@ export class Game {
 
     // Exits come into view.
     if (w.exitTarget < 0 && Math.floor(this.t * 4) !== Math.floor((this.t - dt) * 4)) {
-      for (const e of L.exits) {
+      for (const e of [...L.exits, ...L.fakeExits]) {
+        if (w.fakeSeen.has(e.cell)) continue;
         const p = L.center(e.cell);
         if (Math.hypot(p.x - w.x, p.z - w.z) > CFG.EXIT_VIEW * this.def.rules.view * L.CS) continue;
         if (!L.los(w.x, w.z, p.x, p.z)) continue;
@@ -845,6 +872,11 @@ export class Game {
       this.events.sound('escape', w.x, w.z, 1);
       this.events.toast(`${w.name} found an exit and escaped`);
       this.events.caption('I\'m out. I\'m OUT.', w);
+      return;
+    }
+
+    if (L.fakeCells.has(w.cell) && !w.fakeSeen.has(w.cell)) {
+      this.foundFake(w);
       return;
     }
 
@@ -1050,7 +1082,7 @@ export class Game {
     if (beam) return beam;
     if (L.isBorder(key)) return 'The outer walls don\'t move';
     if (this.dread < CFG.SHIFT_COST) return 'Not enough dread';
-    if (L.exits.some((e) => L.edgeOf(e.cell, e.dir) === key)) return 'Not the exit';
+    if ([...L.exits, ...L.fakeExits].some((e) => L.edgeOf(e.cell, e.dir) === key)) return 'Not the exit';
     if (L.doorOnEdge.has(key)) return 'Doors stay where they are';
     const w = this.edgeWatched(key);
     if (w) return `${w.name} is watching that wall`;

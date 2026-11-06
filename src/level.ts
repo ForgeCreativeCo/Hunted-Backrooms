@@ -1,6 +1,6 @@
 import { CFG } from './config';
 import { RNG } from './rng';
-import { LEVEL0, type LevelDef } from './levels';
+import { dialsFor, LEVEL0, type Dials, type LevelDef } from './levels';
 
 // Directions: 0 = north (-z), 1 = east (+x), 2 = south (+z), 3 = west (-x).
 export const DX = [0, 1, 0, -1];
@@ -159,6 +159,9 @@ export class Level {
   streetBack: { d: number; i: number; j: number; key: number; outer: number } | null = null;
   exits: Exit[] = [];
   exitCells = new Set<number>();
+  /** Exits that look real but open onto brick, and their cells. */
+  fakeExits: Exit[] = [];
+  fakeCells = new Set<number>();
   spawnCell = 0;
   monsterCell = 0;
   pillars: { x: number; z: number }[] = [];
@@ -178,7 +181,7 @@ export class Level {
   version = 0;
 
   /** Built from its seed, to the description of the level it is (Level 0 unless told otherwise). */
-  constructor(readonly seed: string, readonly def: LevelDef = LEVEL0) {
+  constructor(readonly seed: string, readonly def: LevelDef = LEVEL0, readonly dials: Dials = dialsFor(1)) {
     this.walls = new Uint8Array(this.edgeCount).fill(1);
     this.circuit = new Int16Array(this.cells);
     this.panel = new Uint8Array(this.cells);
@@ -246,6 +249,9 @@ export class Level {
   }
 
   isWall(key: number) { return this.walls[key] === 1; }
+
+  /** Is there an exit sign here, real or fake? */
+  signAt(c: number) { return this.exitCells.has(c) || this.fakeCells.has(c); }
 
   /** Is this spot in water: the Poolrooms, or a puddle? */
   wet(wx: number, wz: number) {
@@ -537,18 +543,24 @@ export class Level {
         if (this.zone[this.cell(x, y)] !== Zone.Street) return { cell: this.cell(x, y), dir: side };
       }
     };
-    this.exits.push(borderCell());
-    while (this.exits.length < CFG.EXITS) {
+    // Fake exits too, deeper down: placed the same way, far from every other.
+    const signs: Exit[] = [borderCell()];
+    const want = Math.max(1, this.dials.exits) + this.dials.fakeExits;
+    while (signs.length < want) {
       let best = borderCell(), bestD = -1;
       for (let i = 0; i < 40; i++) {
         const e = borderCell();
-        const d = Math.min(...this.exits.map((x) =>
+        if (signs.some((x) => x.cell === e.cell)) continue;
+        const d = Math.min(...signs.map((x) =>
           Math.hypot(this.cx(e.cell) - this.cx(x.cell), this.cy(e.cell) - this.cy(x.cell))));
         if (d > bestD) { bestD = d; best = e; }
       }
-      this.exits.push(best);
+      signs.push(best);
     }
+    this.exits = signs.slice(0, Math.max(1, this.dials.exits));
+    this.fakeExits = signs.slice(this.exits.length);
     for (const e of this.exits) this.exitCells.add(e.cell);
+    for (const e of this.fakeExits) this.fakeCells.add(e.cell);
 
     // 7. Wanderers noclip in as far from every exit as possible.
     const fromExits = this.bfs([...this.exitCells]);
@@ -573,7 +585,9 @@ export class Level {
     const gen = this.def.gen;
     const allPool = gen.pool === 'all';
     const kinds: Zone[] = [];
-    for (let k = 0; k < gen.dark; k++) kinds.push(Zone.Dark);
+    // Deeper down, more of the level never had power.
+    const dark = Math.max(gen.dark, Math.round(this.circuitCount * (1 - this.dials.lit)));
+    for (let k = 0; k < dark; k++) kinds.push(Zone.Dark);
     if (gen.pitfalls) kinds.push(Zone.Pitfalls);
     for (let k = 0; k < gen.furnished; k++) kinds.push(Zone.Furnished);
     if (gen.pool === 'region') kinds.push(Zone.Pool);
@@ -873,7 +887,7 @@ export class Level {
 
   private furnish(rng: RNG) {
     const { W, H, CS } = this;
-    const exitEdges = new Set(this.exits.map((e) => this.edgeOf(e.cell, e.dir)));
+    const exitEdges = new Set([...this.exits, ...this.fakeExits].map((e) => this.edgeOf(e.cell, e.dir)));
     const doorCell = new Uint8Array(this.cells);
     this.doorCells = doorCell;
 
@@ -890,7 +904,7 @@ export class Level {
     for (let k = 0; k < this.edgeCount; k++) {
       if (this.walls[k] || this.isBorder(k)) continue;
       const [a, b] = this.edgeCells(k);
-      if (this.exitCells.has(a) || this.exitCells.has(b)) continue;
+      if (this.signAt(a) || this.signAt(b)) continue;
       const s = this.edgeSegment(k);
       const vx = Math.round(s.x1 / CS), vy = Math.round(s.z1 / CS);
       const [v2x, v2y] = s.horizontal ? [vx + 1, vy] : [vx, vy + 1];
@@ -929,7 +943,7 @@ export class Level {
     const wallSides: [number, number][] = [];
     for (let k = 0; k < this.edgeCount; k++) {
       if (!this.walls[k] || exitEdges.has(k)) continue;
-      for (const c of this.edgeCells(k)) if (c >= 0 && !this.exitCells.has(c) && this.zone[c] !== Zone.Street) wallSides.push([k, c]);
+      for (const c of this.edgeCells(k)) if (c >= 0 && !this.signAt(c) && this.zone[c] !== Zone.Street) wallSides.push([k, c]);
     }
     rng.shuffle(wallSides);
     const takeSide = () => {
@@ -978,7 +992,7 @@ export class Level {
     const pitCell = new Uint8Array(this.cells);
     for (let c = 0; c < this.cells; c++) {
       if (this.pits.length >= MAX_PITS) break;
-      if (this.zone[c] !== Zone.Pitfalls || doorCell[c] || this.exitCells.has(c) || c === this.spawnCell || !rng.chance(0.45)) continue;
+      if (this.zone[c] !== Zone.Pitfalls || doorCell[c] || this.signAt(c) || c === this.spawnCell || !rng.chance(0.45)) continue;
       const sx = rng.chance(0.5) ? 1 : -1, sz = rng.chance(0.5) ? 1 : -1;
       const w = rng.range(0.75, 1.05), d = rng.range(0.75, 1.05);
       const p = this.center(c);
@@ -1013,7 +1027,7 @@ export class Level {
     this.furnishStreet(new RNG(this.seed + ':street-props'), prop);
     const order = rng.shuffle(Array.from({ length: this.cells }, (_, i) => i));
     for (const c of order) {
-      if (this.exitCells.has(c)) continue;
+      if (this.signAt(c)) continue;
       const cx = (this.cx(c) + 0.5) * CS, cz = (this.cy(c) + 0.5) * CS;
       const wallDirs = [0, 1, 2, 3].filter((d) => !this.open(c, d) && !this.doorOnEdge.has(this.edgeOf(c, d)));
       const k = density(c);
@@ -1096,7 +1110,7 @@ export class Level {
       for (let vx = 1; vx < W; vx++) {
         if (this.vertexWalls(vx, vy, -1)) continue;
         const cells = [this.cell(vx - 1, vy - 1), this.cell(vx, vy - 1), this.cell(vx - 1, vy), this.cell(vx, vy)];
-        if (cells.some((c) => this.exitCells.has(c) || doorCell[c] || this.zone[c] !== Zone.Furnished)) continue;
+        if (cells.some((c) => this.signAt(c) || doorCell[c] || this.zone[c] !== Zone.Furnished)) continue;
         const x = vx * CS, z = vy * CS;
         if (this.pillars.some((p) => p.x === x && p.z === z)) continue;
         const ch = Math.min(...cells.map((c) => this.ceil[c]));
@@ -1160,7 +1174,7 @@ export class Level {
   ) {
     const CS = this.CS;
     for (let c = 0; c < this.cells; c++) {
-      if (this.exitCells.has(c) || doorCell[c] || c === this.spawnCell || !rng.chance(0.2)) continue;
+      if (this.signAt(c) || doorCell[c] || c === this.spawnCell || !rng.chance(0.2)) continue;
       const wallDirs = [0, 1, 2, 3].filter((d) => !this.open(c, d) && !this.doorOnEdge.has(this.edgeOf(c, d)));
       if (!wallDirs.length) continue;
       const d = rng.pick(wallDirs);
@@ -1178,7 +1192,7 @@ export class Level {
       for (let vx = 1; vx < this.W; vx++) {
         if (this.vertexWalls(vx, vy, -1) || !rng.chance(0.05)) continue;
         const cells = [this.cell(vx - 1, vy - 1), this.cell(vx, vy - 1), this.cell(vx - 1, vy), this.cell(vx, vy)];
-        if (cells.some((c) => this.exitCells.has(c) || doorCell[c] || c === this.spawnCell)) continue;
+        if (cells.some((c) => this.signAt(c) || doorCell[c] || c === this.spawnCell)) continue;
         const x = vx * CS, z = vy * CS;
         if (this.pillars.some((q) => q.x === x && q.z === z)) continue;
         prop({ type: 'boxes', x, z, ry: rng.range(0, Math.PI * 2), v: rng.int(2, 5) });
@@ -1198,7 +1212,7 @@ export class Level {
     const fromSpawn = this.bfs([this.spawnCell]);
     const options: { c: number; d: number }[] = [];
     for (let c = 0; c < this.cells; c++) {
-      if (this.exitCells.has(c) || this.doorCells[c] || fromSpawn[c] < 3) continue;
+      if (this.signAt(c) || this.doorCells[c] || fromSpawn[c] < 3) continue;
       if ((this.solidsInCell.get(c) ?? []).length) continue;
       for (let d = 0; d < 4; d++) {
         if (!this.open(c, d) && !this.doorOnEdge.has(this.edgeOf(c, d))) options.push({ c, d });
@@ -1233,7 +1247,7 @@ export class Level {
     const n = Math.min(MAX_PUDDLES, this.def.gen.puddles);
     for (let i = 0, tries = 0; i < n && tries < n * 10; tries++) {
       const c = rng.int(this.cells);
-      if (this.exitCells.has(c) || this.doorCells[c] || this.zone[c] === Zone.Pool) continue;
+      if (this.signAt(c) || this.doorCells[c] || this.zone[c] === Zone.Pool) continue;
       const p = this.center(c);
       const x = p.x + rng.range(-0.7, 0.7), z = p.z + rng.range(-0.7, 0.7);
       if (this.puddles.some((q) => Math.hypot(q.x - x, q.z - z) < q.r + 1)) continue;
