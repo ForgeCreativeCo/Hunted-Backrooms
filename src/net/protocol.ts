@@ -72,6 +72,7 @@ export interface Snapshot {
   walls?: string; // '0'/'1' per edge, only when the version changed
   doors: string; // per door: '0' closed, '1' open towards +n, '2' open towards -n
   sup: string; // per supply crate: '1' once emptied
+  sp?: number[]; // circuits lit by a spark right now
 }
 
 const r2 = (v: number) => Math.round(v * 100) / 100;
@@ -94,9 +95,12 @@ export function encodeSnapshot(g: Game, sentWallVersion: number): Snapshot {
     chalk: [...g.chalk].flatMap(([cell, mark]) => [cell, mark.dir]),
     x: r2(g.exitT),
     wv: L.version,
-    doors: L.doors.map((d) => (d.open === 0 ? '0' : d.open > 0 ? '1' : '2')).join(''),
+    doors: L.doors.map((d) => (d.open === 0 ? (d.lockT > 0 ? 'L' : '0') : d.open > 0 ? '1' : '2')).join(''),
     sup: Array.from(g.taken).join(''),
   };
+  const sp: number[] = [];
+  g.spark.forEach((v, i) => { if (v > 0) sp.push(i); });
+  if (sp.length) snap.sp = sp;
   if (L.version !== sentWallVersion) snap.walls = Array.from(L.walls).join('');
   return snap;
 }
@@ -152,11 +156,14 @@ export function applySnapshot(g: Game, s: Snapshot, self: { role: Role; slot: nu
     for (let k = 0; k < s.walls.length; k++) g.level.walls[k] = s.walls.charCodeAt(k) === 49 ? 1 : 0;
   }
   g.level.version = s.wv;
+  g.spark.fill(0);
+  for (const i of s.sp ?? []) g.spark[i] = 0.1;
   for (let i = 0; i < (s.sup?.length ?? 0); i++) g.taken[i] = s.sup.charCodeAt(i) === 49 ? 1 : 0;
   for (let i = 0; i < s.doors.length; i++) {
     const d = g.level.doors[i];
     if (!d) continue;
     const ch = s.doors[i];
-    d.open = ch === '0' ? 0 : ch === '1' ? 1 : -1;
+    d.open = ch === '0' || ch === 'L' ? 0 : ch === '1' ? 1 : -1;
+    d.lockT = ch === 'L' ? 1 : 0;
   }
 }

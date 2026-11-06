@@ -142,6 +142,10 @@ export class SenseView {
       ctx.fillText('EXIT', this.sx(p.x), this.sy(p.z) + 3);
     }
 
+    // Machines, which cover the monster's approach.
+    ctx.fillStyle = 'rgba(150,180,220,0.5)';
+    for (const mc of L.machines) ctx.fillRect(this.sx(mc.x) - 4, this.sy(mc.z) - 4, 8, 8);
+
     // Steam vents, and the deaf ring round each one while it hisses.
     L.vents.forEach((v, i) => {
       const on = g.ventOn(i);
@@ -289,8 +293,8 @@ export class SenseView {
         this.tooltip(err ?? (L.isWall(key) ? `Open this wall · ${CFG.SHIFT_COST} dread` : `Wall off this gap · ${CFG.SHIFT_COST} dread`), !err);
       }
     } else if (aim === 'blackout' && hoverCircuit >= 0) {
-      const err = g.blackout[hoverCircuit] > 0 || L.dead[hoverCircuit] ? 'Already dark' : g.dread < CFG.BLACKOUT_COST ? 'Not enough dread' : null;
-      this.tooltip(err ?? `Blackout this circuit · ${CFG.BLACKOUT_COST} dread`, !err);
+      const err = g.blackout[hoverCircuit] > 0 || L.dead[hoverCircuit] ? 'Already dark' : g.dread < g.blackoutCost ? 'Not enough dread' : null;
+      this.tooltip(err ?? `Blackout this circuit · ${g.blackoutCost} dread`, !err);
     }
   }
 

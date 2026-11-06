@@ -7,7 +7,7 @@ import { RNG } from './rng';
  * depth, so the server and every client agree on it without being told.
  */
 export interface LevelDef {
-  id: 'level0' | 'level1' | 'level2' | 'level6' | 'poolrooms' | 'street';
+  id: 'level0' | 'level1' | 'level2' | 'level3' | 'level4' | 'level5' | 'level6' | 'poolrooms' | 'street';
   /** As the HUD and end screen name it. */
   name: string;
   /** Shown as players arrive. */
@@ -15,8 +15,12 @@ export interface LevelDef {
   /** A side level: reached only now and then, through an ordinary-looking exit. */
   rare: boolean;
   gen: {
-    /** Office rooms of odd sizes, a warehouse of huge concrete halls, or narrow service tunnels. */
-    rooms: 'office' | 'warehouse' | 'tunnels';
+    /**
+     * Office rooms of odd sizes; a warehouse of huge concrete halls; narrow
+     * service tunnels; machinery halls with catwalks; open-plan floors of
+     * cubicles; or a hotel's long corridors of numbered rooms.
+     */
+    rooms: 'office' | 'warehouse' | 'tunnels' | 'station' | 'openplan' | 'hotel';
     /** Is there power? 'none': every light in the level is dead. */
     power: 'on' | 'none';
     /** One room walled in and gone red. */
@@ -39,6 +43,10 @@ export interface LevelDef {
     pipes: boolean;
     /** Steam vents that hiss now and then, hiding every sound nearby. */
     vents: number;
+    /** At most this many real exits, whatever the depth allows. */
+    maxExits?: number;
+    /** Fake exits on top of the depth's own. */
+    extraFakes?: number;
   };
   look: {
     /** The air's colour where the lights are on. */
@@ -49,8 +57,8 @@ export interface LevelDef {
     ambient: number;
     /** How loud the lights hum, 1 = Level 0's buzz. */
     hum: number;
-    /** Wallpaper, carpet and ceiling tile, or bare concrete. */
-    surface: 'office' | 'concrete';
+    /** Wallpaper, carpet and ceiling tile; bare concrete; a hotel's stripes and red carpet; or grey office. */
+    surface: 'office' | 'concrete' | 'hotel' | 'grey';
   };
   rules: {
     /** How fast the dark frightens people, 1 = Level 0. */
@@ -59,6 +67,10 @@ export interface LevelDef {
     view: number;
     /** How hard the heat makes breathing: sprinting drains this much faster, and breath comes back this much slower. */
     heat: number;
+    /** What a Blackout costs, as a share of its usual price. */
+    blackoutCost?: number;
+    /** Dark circuits spark now and then, lit for a moment. */
+    sparks?: boolean;
   };
 }
 
@@ -103,6 +115,46 @@ export const LEVEL2: LevelDef = {
   rules: { darkFear: 1, view: 1, heat: 1.5 },
 };
 
+export const LEVEL3: LevelDef = {
+  id: 'level3',
+  name: 'Level 3',
+  signature: 'Machinery halls and catwalks. Everything hums, sparks, and drowns out what\'s coming.',
+  rare: false,
+  gen: {
+    rooms: 'station', power: 'on', manila: false, dark: 2, pitfalls: false, furnished: 0, pool: 'none', street: false,
+    supplies: 0, puddles: 6, pipes: false, vents: 0,
+  },
+  look: { fog: 0x22282e, fogDensity: 0.05, ambient: 0xcfe0ff, hum: 1.7, surface: 'concrete' },
+  rules: { darkFear: 1, view: 1, heat: 1, blackoutCost: 0.5, sparks: true },
+};
+
+export const LEVEL4: LevelDef = {
+  id: 'level4',
+  name: 'Level 4',
+  signature: 'An empty office, every light on. It\'s quiet. Only one of these exits is real.',
+  rare: false,
+  gen: {
+    rooms: 'openplan', power: 'on', manila: false, dark: 0, pitfalls: false, furnished: 0, pool: 'none', street: false,
+    supplies: 0, puddles: 0, pipes: false, vents: 0, maxExits: 1, extraFakes: 2,
+  },
+  look: { fog: 0x34373a, fogDensity: 0.034, ambient: 0xf0f3f6, hum: 0.3, surface: 'grey' },
+  rules: NORMAL,
+};
+
+export const LEVEL5: LevelDef = {
+  id: 'level5',
+  name: 'Level 5',
+  signature: 'A hotel. Long corridors, numbered doors. Step into a room and it locks behind you, for a while.',
+  rare: false,
+  gen: {
+    rooms: 'hotel', power: 'on', manila: false, dark: 1, pitfalls: false, furnished: 0, pool: 'none', street: false,
+    supplies: 0, puddles: 0, pipes: false, vents: 0,
+  },
+  look: { fog: 0x2e1d14, fogDensity: 0.045, ambient: 0xffd9a8, hum: 0.5, surface: 'hotel' },
+  // The corridors run long and straight, and everyone in them is easy to see.
+  rules: { darkFear: 1, view: 1.25, heat: 1 },
+};
+
 export const LEVEL6: LevelDef = {
   id: 'level6',
   name: 'Level 6',
@@ -135,13 +187,13 @@ export const STREET: LevelDef = {
   rules: NORMAL,
 };
 
-export const LEVELS: LevelDef[] = [LEVEL0, LEVEL1, LEVEL2, LEVEL6, POOLROOMS, STREET];
+export const LEVELS: LevelDef[] = [LEVEL0, LEVEL1, LEVEL2, LEVEL3, LEVEL4, LEVEL5, LEVEL6, POOLROOMS, STREET];
 
 /**
- * The main way down, in order. Below its end it comes round again. Levels 3 to
- * 5 will slot in between Level 2 and Level 6.
+ * The main way down, in order. Below its end it comes round again, darker and
+ * with fewer exits each time (see the dials).
  */
-const MAIN: LevelDef[] = [LEVEL0, LEVEL1, LEVEL2, LEVEL6];
+const MAIN: LevelDef[] = [LEVEL0, LEVEL1, LEVEL2, LEVEL3, LEVEL4, LEVEL5, LEVEL6];
 const RARE: LevelDef[] = [POOLROOMS, STREET];
 /** Chance that any exit below the first level leads to a side level instead. */
 const RARE_CHANCE = 0.2;

@@ -46,10 +46,23 @@ export interface Door {
   openT: number;
   /** If set, the only way it ever swings (1 or -1); 0 swings away from whoever pushes it. */
   swing: number;
+  /** A hotel room's door: the room's index, or -1. */
+  room: number;
+  /** The number on the wall beside it, if any. */
+  label: string | null;
+  /** Seconds it stays locked against the monster, and before it can lock again. */
+  lockT: number;
+  lockCD: number;
+}
+
+/** A hotel room: its cells, and the door it's entered by. */
+export interface HotelRoom {
+  cells: number[];
+  door: number;
 }
 
 export type PropType = 'chair' | 'desk' | 'cabinet' | 'crt' | 'mattress' | 'lamp' | 'phone' | 'mannequin' | 'stairs' | 'paper' | 'speaker' | 'house' | 'fence' | 'mailbox' | 'fan' | 'stop'
-  | 'crate' | 'pallet' | 'boxes' | 'pipes' | 'valve';
+  | 'crate' | 'pallet' | 'boxes' | 'pipes' | 'valve' | 'machine' | 'catwalk' | 'cubicle' | 'window' | 'bed';
 
 /** A steam vent on a wall: where the jet comes out, which way it blows, and where in its cycle it starts. */
 export interface Vent {
@@ -159,6 +172,11 @@ export class Level {
   supplies: Supply[] = [];
   /** Steam vents (Level 2). */
   vents: Vent[] = [];
+  /** Machines (Level 3): their centres. */
+  machines: { x: number; z: number }[] = [];
+  /** Hotel rooms (Level 5), and which room each cell belongs to (-1 for none). */
+  rooms: HotelRoom[] = [];
+  roomOf: Int16Array;
   /** The Street's hall, or null if no place for it fit. */
   street: Street | null = null;
   /** The Street's hall in cells. */
@@ -199,6 +217,7 @@ export class Level {
     this.panel = new Uint8Array(this.cells);
     this.ceil = new Float32Array(this.cells).fill(CFG.WALL_H);
     this.zone = new Uint8Array(this.cells);
+    this.roomOf = new Int16Array(this.cells).fill(-1);
     this.generate(new RNG(seed), new RNG(seed + ':zones'));
     this.furnish(new RNG(seed + ':furnish'));
     this.placeSupplies(new RNG(seed + ':supplies'));
@@ -442,9 +461,15 @@ export class Level {
     // A warehouse is mostly huge, tall concrete halls joined by wide aisles.
     const warehouse = this.def.gen.rooms === 'warehouse';
     const tunnels = this.def.gen.rooms === 'tunnels';
+    const station = this.def.gen.rooms === 'station';
+    const openplan = this.def.gen.rooms === 'openplan';
+    const hotel = this.def.gen.rooms === 'hotel';
     if (warehouse) this.carveWarehouse(rng);
     if (tunnels) this.carveTunnels(rng);
-    const rooms = warehouse || tunnels ? 0 : 16;
+    if (station) this.carveWarehouse(rng, { base: [3.0, 3.4], halls: 8, size: [4, 8], high: [4.5, 6.5] });
+    if (openplan) this.carveWarehouse(rng, { base: [2.7, 2.7], halls: 9, size: [5, 10], high: [2.7, 2.7] });
+    if (hotel) this.carveHotel(rng);
+    const rooms = warehouse || tunnels || station || openplan || hotel ? 0 : 16;
     for (let i = 0; i < rooms; i++) {
       const shape = rng.next();
       let rw: number, rh: number;
@@ -469,7 +494,7 @@ export class Level {
 
     // 3. Knock out some walls so there are loops, but keep plenty of dead ends.
     for (let k = 0; k < this.edgeCount; k++) {
-      if (this.walls[k] && !this.isBorder(k) && rng.chance(warehouse ? 0.3 : tunnels ? 0.08 : 0.22)) this.walls[k] = 0;
+      if (this.walls[k] && !this.isBorder(k) && !hotel && rng.chance(warehouse || station ? 0.3 : openplan ? 0.25 : tunnels ? 0.08 : 0.22)) this.walls[k] = 0;
     }
 
     // 3b. The Manila Room: one ordinary room, walled in again with as few ways in
@@ -509,7 +534,7 @@ export class Level {
         if (this.zone[a] === Zone.Street || this.zone[b] === Zone.Street) continue;
         const open = this.open(a, 1) && this.open(a, 2) && this.open(b, 0) && this.open(b, 3);
         // A warehouse's halls stand on rows of concrete columns.
-        if (open && rng.chance(warehouse ? 0.7 : tunnels ? 0.1 : 0.3)) this.pillars.push({ x: vx * this.CS, z: vy * this.CS });
+        if (open && rng.chance(warehouse ? 0.7 : station ? 0.25 : tunnels || openplan ? 0.1 : 0.3)) this.pillars.push({ x: vx * this.CS, z: vy * this.CS });
       }
     }
 
@@ -545,7 +570,7 @@ export class Level {
       // The Street is lit end to end, like a sound stage.
       // A warehouse's lamps hang further apart, with dim stretches between.
       // So do the tunnels' caged bulbs.
-      const lamp = warehouse || tunnels ? (this.cx(c) + this.cy(c)) % 2 === 0 && rng.chance(tunnels ? 0.6 : 0.7) : (this.cx(c) + this.cy(c)) % 2 === 0 || rng.chance(0.2);
+      const lamp = warehouse || tunnels || station ? (this.cx(c) + this.cy(c)) % 2 === 0 && rng.chance(tunnels ? 0.6 : 0.7) : (this.cx(c) + this.cy(c)) % 2 === 0 || rng.chance(0.2);
       this.panel[c] = lamp || this.zone[c] === Zone.Street ? 1 : 0;
     }
 
@@ -561,7 +586,8 @@ export class Level {
     };
     // Fake exits too, deeper down: placed the same way, far from every other.
     const signs: Exit[] = [borderCell()];
-    const want = Math.max(1, this.dials.exits) + this.dials.fakeExits;
+    const real = Math.max(1, Math.min(this.dials.exits, this.def.gen.maxExits ?? 99));
+    const want = real + this.dials.fakeExits + (this.def.gen.extraFakes ?? 0);
     while (signs.length < want) {
       let best = borderCell(), bestD = -1;
       for (let i = 0; i < 40; i++) {
@@ -573,7 +599,7 @@ export class Level {
       }
       signs.push(best);
     }
-    this.exits = signs.slice(0, Math.max(1, this.dials.exits));
+    this.exits = signs.slice(0, real);
     this.fakeExits = signs.slice(this.exits.length);
     for (const e of this.exits) this.exitCells.add(e.cell);
     for (const e of this.fakeExits) this.fakeCells.add(e.cell);
@@ -630,6 +656,65 @@ export class Level {
   }
 
   /**
+   * A hotel: long straight corridors across the whole floor, every few rows,
+   * joined by corridors running the other way; everything between them is
+   * rooms, two cells deep and two or three wide, each entered by one door.
+   */
+  private carveHotel(rng: RNG) {
+    const { W, H } = this;
+    this.walls.fill(1);
+    this.ceil.fill(2.6);
+    const rows = [2, 7, 12, 17, 22].filter((y) => y < H);
+    const cols = [0, Math.floor(W / 2), W - 1];
+    const corridor = (x: number, y: number) => rows.includes(y) || cols.includes(x);
+    for (const y of rows) for (let x = 0; x + 1 < W; x++) this.walls[this.edgeOf(this.cell(x, y), 1)] = 0;
+    for (const x of cols) for (let y = 0; y + 1 < H; y++) this.walls[this.edgeOf(this.cell(x, y), 2)] = 0;
+    // Each band of two rows belongs to the corridor it touches.
+    const bands: { ys: number[]; cy: number }[] = [];
+    for (const y of rows) {
+      const above = [y - 2, y - 1].filter((v) => v >= 0 && !corridor(-1, v));
+      const below = [y + 1, y + 2].filter((v) => v < H && !corridor(-1, v));
+      if (above.length) bands.push({ ys: above, cy: y });
+      if (below.length) bands.push({ ys: below, cy: y });
+    }
+    for (const b of bands) {
+      // Runs of columns between the corridors running the other way.
+      let x = 0;
+      while (x < W) {
+        if (corridor(x, -1)) { x++; continue; }
+        let end = x;
+        while (end < W && !corridor(end, -1)) end++;
+        // Split the run into rooms two or three wide.
+        let rx = x;
+        while (rx < end) {
+          const left = end - rx;
+          const w = left <= 3 ? left : left === 4 ? 2 : rng.chance(0.5) ? 2 : 3;
+          const cells: number[] = [];
+          for (const yy of b.ys) {
+            for (let xx = rx; xx < rx + w; xx++) {
+              const c = this.cell(xx, yy);
+              cells.push(c);
+              if (xx + 1 < rx + w) this.walls[this.edgeOf(c, 1)] = 0;
+              if (yy !== b.ys[b.ys.length - 1]) this.walls[this.edgeOf(c, 2)] = 0;
+            }
+          }
+          // Its door: from the row next to the corridor, into the corridor.
+          const nearY = b.ys.reduce((a, v) => (Math.abs(v - b.cy) < Math.abs(a - b.cy) ? v : a));
+          const dx = rx + rng.int(w);
+          const dir = b.cy < nearY ? 0 : 2;
+          const key = this.edgeOf(this.cell(dx, nearY), dir);
+          this.walls[key] = 0;
+          const id = this.rooms.length;
+          for (const c of cells) this.roomOf[c] = id;
+          this.rooms.push({ cells, door: key });
+          rx += w;
+        }
+        x = end;
+      }
+    }
+  }
+
+  /**
    * Service tunnels: the maze left almost as it is, low and narrow, with a few
    * small pump rooms where it opens up a little.
    */
@@ -654,17 +739,16 @@ export class Level {
    * A warehouse: every room is tall, and most of the floor is a few huge halls
    * and the wide aisles between them, with the maze left only in the gaps.
    */
-  private carveWarehouse(rng: RNG) {
+  private carveWarehouse(rng: RNG, o = { base: [3.6, 4.2], halls: 11, size: [4, 10], high: [5.5, 8] }) {
     const { W, H } = this;
-    for (let c = 0; c < this.cells; c++) this.ceil[c] = rng.chance(0.5) ? 3.6 : 4.2;
-    const halls = 11;
-    for (let i = 0; i < halls; i++) {
+    for (let c = 0; c < this.cells; c++) this.ceil[c] = rng.chance(0.5) ? o.base[0] : o.base[1];
+    for (let i = 0; i < o.halls; i++) {
       const aisle = rng.chance(0.3);
       const along = rng.chance(0.5);
-      const rw = aisle ? (along ? rng.int(9, 18) : 2) : rng.int(4, 10);
-      const rh = aisle ? (along ? 2 : rng.int(9, 18)) : rng.int(4, 9);
+      const rw = aisle ? (along ? rng.int(9, 18) : 2) : rng.int(o.size[0], o.size[1]);
+      const rh = aisle ? (along ? 2 : rng.int(9, 18)) : rng.int(o.size[0], o.size[1] - 1);
       const rx = rng.int(0, W - rw + 1), ry = rng.int(0, H - rh + 1);
-      const height = aisle ? rng.range(4.2, 5.5) : rng.range(5.5, 8);
+      const height = aisle ? Math.min(o.high[0], rng.range(4.2, 5.5)) : rng.range(o.high[0], o.high[1]);
       for (let y = ry; y < ry + rh; y++) {
         for (let x = rx; x < rx + rw; x++) {
           const c = this.cell(x, y);
@@ -887,6 +971,7 @@ export class Level {
       mx: (s.x1 + s.x2) / 2, mz: (s.z1 + s.z2) / 2,
       tx: s.horizontal ? 1 : 0, tz: s.horizontal ? 0 : 1,
       w: 0.95, h: 2.05, y0: 0, variant: null, free: false, link: -1, open: 0, openT: 0, swing: 0,
+      room: -1, label: null, lockT: 0, lockCD: 0,
       ...opts,
     };
     this.doors.push(d);
@@ -936,6 +1021,17 @@ export class Level {
       for (const c of this.edgeCells(back.key)) doorCell[c] = 1;
     }
 
+    // A hotel's numbered doors, one to each room, seen from the corridor.
+    this.rooms.forEach((rm, i) => {
+      const [a, b] = this.edgeCells(rm.door);
+      const corridorSide = this.roomOf[a] === i ? b : a;
+      // Numbered by the corridor they open onto, then along it.
+      const floor = 1 + Math.floor(this.cy(corridorSide) / 5);
+      const label = `${floor}${String(1 + (i % 40)).padStart(2, '0')}`;
+      this.makeDoor('swing', rm.door, corridorSide, { room: i, label });
+      doorCell[a] = doorCell[b] = 1;
+    });
+
     // Doorway doors on open edges flanked by walls, so they read as doorways.
     const swing: number[] = [];
     for (let k = 0; k < this.edgeCount; k++) {
@@ -949,7 +1045,7 @@ export class Level {
     }
     let placed = 0;
     for (const k of rng.shuffle(swing)) {
-      if (placed >= 16) break;
+      if (placed >= (this.rooms.length ? 0 : 16)) break;
       const [a, b] = this.edgeCells(k);
       if (doorCell[a] || doorCell[b]) continue;
       this.makeDoor('swing', k, a);
@@ -1141,6 +1237,9 @@ export class Level {
     }
 
     if (this.def.gen.rooms === 'warehouse') this.furnishWarehouse(rng, prop, solidAt, doorCell);
+    if (this.def.gen.rooms === 'station') this.furnishStation(new RNG(this.seed + ':station'), prop, doorCell);
+    if (this.def.gen.rooms === 'openplan') this.furnishOpenPlan(new RNG(this.seed + ':openplan'), prop, doorCell);
+    if (this.def.gen.rooms === 'hotel') this.furnishHotel(new RNG(this.seed + ':hotel'), prop);
     if (this.def.gen.pipes) this.furnishPipes(new RNG(this.seed + ':pipes'), prop);
 
     // Arrangements in open rooms, centred on grid corners so the walkways stay clear.
@@ -1235,6 +1334,103 @@ export class Level {
         if (this.pillars.some((q) => q.x === x && q.z === z)) continue;
         prop({ type: 'boxes', x, z, ry: rng.range(0, Math.PI * 2), v: rng.int(2, 5) });
         this.addSolid({ x0: x - 0.6, z0: z - 0.6, x1: x + 0.6, z1: z + 0.6 });
+      }
+    }
+  }
+
+  /** Open grid corners (no wall meeting them, no pillar), clear of exits and doors. */
+  private openCorners(doorCell: Uint8Array) {
+    const out: { x: number; z: number; cells: number[] }[] = [];
+    for (let vy = 1; vy < this.H; vy++) {
+      for (let vx = 1; vx < this.W; vx++) {
+        if (this.vertexWalls(vx, vy, -1)) continue;
+        const cells = [this.cell(vx - 1, vy - 1), this.cell(vx, vy - 1), this.cell(vx - 1, vy), this.cell(vx, vy)];
+        if (cells.some((c) => this.signAt(c) || doorCell[c] || c === this.spawnCell)) continue;
+        const x = vx * this.CS, z = vy * this.CS;
+        if (this.pillars.some((q) => q.x === x && q.z === z)) continue;
+        out.push({ x, z, cells });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * The electrical station: machines standing on the open corners of the halls
+   * (the walkways between cells stay clear), and catwalks along the walls of
+   * the tall ones.
+   */
+  private furnishStation(rng: RNG, prop: (p: Partial<Prop> & { type: PropType; x: number; z: number }) => Prop, doorCell: Uint8Array) {
+    for (const v of this.openCorners(doorCell)) {
+      if (!rng.chance(0.4)) continue;
+      prop({ type: 'machine', x: v.x, z: v.z, ry: rng.int(4) * (Math.PI / 2), v: rng.int(3) });
+      this.machines.push({ x: v.x, z: v.z });
+      this.addSolid({ x0: v.x - 0.85, z0: v.z - 0.85, x1: v.x + 0.85, z1: v.z + 0.85 });
+    }
+    for (let k = 0; k < this.edgeCount; k++) {
+      if (!this.walls[k]) continue;
+      const s = this.edgeSegment(k);
+      const mx = (s.x1 + s.x2) / 2, mz = (s.z1 + s.z2) / 2;
+      for (const c of this.edgeCells(k)) {
+        if (c < 0 || this.ceil[c] < 4.5 || !rng.chance(0.6)) continue;
+        const p = this.center(c);
+        const nx = Math.sign(Math.round(p.x - mx)), nz = Math.sign(Math.round(p.z - mz));
+        prop({ type: 'catwalk', x: mx + nx * 0.08, z: mz + nz * 0.08, y: 3.2, ry: Math.atan2(nx, nz) });
+      }
+    }
+  }
+
+  /**
+   * An open-plan office: clusters of four cubicles on the open corners, and
+   * windows in the outer walls looking out onto nothing at all.
+   */
+  private furnishOpenPlan(rng: RNG, prop: (p: Partial<Prop> & { type: PropType; x: number; z: number }) => Prop, doorCell: Uint8Array) {
+    for (const v of this.openCorners(doorCell)) {
+      if (!rng.chance(0.55)) continue;
+      // v: which quadrants have a monitor (bits 1-8), and which chairs are pushed back (16-128).
+      prop({ type: 'cubicle', x: v.x, z: v.z, ry: rng.int(4) * (Math.PI / 2), v: rng.int(256) });
+      this.addSolid({ x0: v.x - 1.0, z0: v.z - 0.05, x1: v.x + 1.0, z1: v.z + 0.05 });
+      this.addSolid({ x0: v.x - 0.05, z0: v.z - 1.0, x1: v.x + 0.05, z1: v.z + 1.0 });
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+        this.addSolid({ x0: v.x + Math.min(sx * 0.1, sx * 1.1), z0: v.z + Math.min(sz * 0.05, sz * 0.65), x1: v.x + Math.max(sx * 0.1, sx * 1.1), z1: v.z + Math.max(sz * 0.05, sz * 0.65) });
+      }
+    }
+    for (let k = 0; k < this.edgeCount; k++) {
+      if (!this.walls[k] || !this.isBorder(k) || !rng.chance(0.6)) continue;
+      const c = this.edgeCells(k).find((x) => x >= 0)!;
+      if (this.signAt(c)) continue;
+      const s = this.edgeSegment(k);
+      const mx = (s.x1 + s.x2) / 2, mz = (s.z1 + s.z2) / 2;
+      const p = this.center(c);
+      const nx = Math.sign(Math.round(p.x - mx)), nz = Math.sign(Math.round(p.z - mz));
+      prop({ type: 'window', x: mx + nx * 0.085, z: mz + nz * 0.085, ry: Math.atan2(nx, nz) });
+    }
+  }
+
+  /** A hotel room's bed against its back wall, and a lamp beside it. */
+  private furnishHotel(rng: RNG, prop: (p: Partial<Prop> & { type: PropType; x: number; z: number }) => Prop) {
+    for (const rm of this.rooms) {
+      const [a, b] = this.edgeCells(rm.door);
+      const inner = this.roomOf[a] >= 0 && this.rooms[this.roomOf[a]] === rm ? a : b;
+      // The back wall: the far side of the room from its door.
+      const doorDir = [0, 1, 2, 3].find((d) => this.edgeOf(inner, d) === rm.door)!;
+      const back = OPP[doorDir];
+      const far = rm.cells.filter((c) => {
+        const n = this.neighbor(c, back);
+        return !this.open(c, back) && !this.signAt(c) && (n < 0 || this.roomOf[n] !== this.roomOf[inner]);
+      });
+      if (!far.length) continue;
+      const c = rng.pick(far);
+      const p = this.center(c);
+      const nx = -DX[back], nz = -DY[back];
+      const wx = p.x - nx * this.CS / 2, wz = p.z - nz * this.CS / 2;
+      // Lying along the wall, its head to one side.
+      const bx = wx + nx * 0.8, bz = wz + nz * 0.8;
+      prop({ type: 'bed', x: bx, z: bz, ry: Math.atan2(nx, nz), v: rng.int(2) });
+      this.addSolid({ x0: bx - (nz ? 1.0 : 0.72), z0: bz - (nx ? 1.0 : 0.72), x1: bx + (nz ? 1.0 : 0.72), z1: bz + (nx ? 1.0 : 0.72) });
+      if (rng.chance(0.6)) {
+        const side = rng.chance(0.5) ? 1 : -1;
+        const lx = wx + nx * 0.35 + nz * side * 1.25, lz = wz + nz * 0.35 + nx * side * 1.25;
+        prop({ type: 'lamp', x: lx, z: lz, ry: 0 });
       }
     }
   }

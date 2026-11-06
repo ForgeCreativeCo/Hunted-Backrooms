@@ -315,6 +315,80 @@ function valve(b: Builder) {
   b.add('red', new THREE.TorusGeometry(0.1, 0.014, 6, 16), 0, 1.58, 0.18, Math.PI / 2);
 }
 
+function machine(b: Builder, v: number) {
+  // A transformer or generator: a heavy cabinet on a plinth, fins down its sides,
+  // insulators on top, and a little lit panel.
+  b.box('dark', 1.6, 0.14, 1.6, 0, 0.07, 0);
+  b.box('metal', 1.3, 1.5 + v * 0.2, 1.1, 0, 0.14 + (1.5 + v * 0.2) / 2, 0);
+  for (let i = 0; i < 6; i++) for (const s of [-1, 1]) b.box('metal', 0.03, 1.2, 0.12, s * (0.66 + 0.04), 0.9, -0.45 + i * 0.18);
+  const top = 0.14 + 1.5 + v * 0.2;
+  for (const x of [-0.4, 0, 0.4]) {
+    b.cyl('plastic', 0.07, 0.09, 0.4, x, top + 0.2, -0.2);
+    for (let k = 0; k < 3; k++) b.cyl('plastic', 0.11, 0.11, 0.025, x, top + 0.08 + k * 0.12, -0.2);
+  }
+  b.box('dark', 0.5, 0.32, 0.02, 0.25, 1.15, 0.56);
+  b.box('screen', 0.12, 0.05, 0.022, 0.12, 1.22, 0.562);
+  b.box('red', 0.04, 0.04, 0.025, 0.35, 1.22, 0.562);
+  b.box('rust', 0.12, 0.6, 0.12, -0.5, 0.44, 0.62);
+}
+
+function catwalk(b: Builder) {
+  // A grated walkway along the wall, high up, with a rail on the open side. (y is set by the prop.)
+  b.box('metal', 3.0, 0.05, 0.9, 0, 0, 0.45);
+  for (const x of [-1.4, 0, 1.4]) {
+    b.box('dark', 0.05, 1.0, 0.05, x, 0.5, 0.88);
+    b.box('dark', 0.06, 0.06, 0.9, x, -0.05, 0.45);
+  }
+  b.box('dark', 3.0, 0.04, 0.04, 0, 1.0, 0.88);
+  b.box('dark', 3.0, 0.03, 0.03, 0, 0.5, 0.88);
+}
+
+function deskChair(b: Builder, x: number, z: number, ry: number) {
+  b.cyl('metal', 0.025, 0.025, 0.4, x, 0.22, z);
+  b.box('fabric', 0.46, 0.08, 0.44, x, 0.45, z, 0, ry);
+  b.box('fabric', 0.42, 0.48, 0.07, x - Math.sin(ry) * 0.22, 0.78, z - Math.cos(ry) * 0.22, 0, ry);
+}
+
+function cubicle(b: Builder, v: number) {
+  // Four workstations around a cross of fabric partitions.
+  b.box('fabric', 2.0, 1.4, 0.06, 0, 0.7, 0);
+  b.box('fabric', 0.06, 1.4, 2.0, 0, 0.7, 0);
+  b.box('metal', 2.02, 0.03, 0.08, 0, 1.415, 0);
+  b.box('metal', 0.08, 0.03, 2.02, 0, 1.415, 0);
+  let q = 0;
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    // A desk along the partition, its chair, and maybe a monitor.
+    b.box('laminate', 0.95, 0.04, 0.58, sx * 0.6, 0.73, sz * 0.36);
+    b.box('laminate', 0.03, 0.72, 0.56, sx * 1.06, 0.36, sz * 0.36);
+    if (v & (1 << q)) {
+      b.box('plastic', 0.38, 0.32, 0.34, sx * 0.6, 0.92, sz * 0.24);
+      b.box('screen', 0.3, 0.23, 0.01, sx * 0.6, 0.93, sz * 0.415);
+    }
+    const back = v & (16 << q) ? 0.25 : 0;
+    deskChair(b, sx * 0.6, sz * (0.92 + back), sz > 0 ? Math.PI : 0);
+    q++;
+  }
+}
+
+function windowPane(b: Builder) {
+  // A window in the outer wall, onto black.
+  b.box('glass', 2.2, 1.2, 0.02, 0, 1.55, 0.005);
+  b.box('white', 2.3, 0.06, 0.06, 0, 0.92, 0.02);
+  b.box('white', 2.3, 0.06, 0.05, 0, 2.18, 0.02);
+  for (const x of [-1.13, 0, 1.13]) b.box('white', 0.05, 1.26, 0.05, x, 1.55, 0.02);
+  b.box('white', 2.4, 0.03, 0.16, 0, 0.9, 0.07);
+}
+
+function bed(b: Builder, v: number) {
+  // Lying along the wall (local x), against it (local -z).
+  const h = v ? 1 : -1;
+  b.box('wood', 2.0, 0.32, 1.4, 0, 0.16, 0);
+  b.box('white', 1.95, 0.2, 1.36, 0, 0.42, 0);
+  b.box(v ? 'red' : 'sidingBlue', 1.3, 0.06, 1.38, -h * 0.3, 0.55, 0);
+  b.box('white', 0.38, 0.12, 0.62, h * 0.72, 0.58, -0.3);
+  b.box('wood', 0.08, 1.0, 1.45, h * 1.02, 0.5, 0);
+}
+
 export function buildProps(props: Prop[]): Map<PropMat, THREE.BufferGeometry> {
   const b = new Builder();
   const flip = new THREE.Matrix4().makeRotationX(Math.PI);
@@ -354,6 +428,11 @@ export function buildProps(props: Prop[]): Map<PropMat, THREE.BufferGeometry> {
       case 'boxes': boxes(b, p.v); break;
       case 'pipes': pipes(b, p.v); break;
       case 'valve': valve(b); break;
+      case 'machine': machine(b, p.v); break;
+      case 'catwalk': catwalk(b); break;
+      case 'cubicle': cubicle(b, p.v); break;
+      case 'window': windowPane(b); break;
+      case 'bed': bed(b, p.v); break;
     }
   }
   const out = new Map<PropMat, THREE.BufferGeometry>();

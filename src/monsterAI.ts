@@ -245,7 +245,7 @@ export class MonsterAI {
     const L = g.level;
     const m = g.monster;
     // Stalking someone in the light: kill it.
-    if (this.blackoutT <= 0 && (this.state === 'listen' || this.state === 'search' || this.state === 'chase') && g.dread >= CFG.BLACKOUT_COST) {
+    if (this.blackoutT <= 0 && (this.state === 'listen' || this.state === 'search' || this.state === 'chase') && g.dread >= g.blackoutCost) {
       const near = g.wanderers.find((w) => w.active && g.isLit(w.cell) && Math.hypot(w.x - m.x, w.z - m.z) < 18);
       if (near && !g.tryBlackout(L.circuit[near.cell])) this.blackoutT = 35 + g.rng.range(0, 25);
       else this.blackoutT = 3;

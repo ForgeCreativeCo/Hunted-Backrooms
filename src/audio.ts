@@ -495,6 +495,26 @@ export class Sound {
         setTimeout(() => this.tone(p, 'sine', 1320, 1180, 0.25, 0.08), 180);
         break;
       }
+      case 'spark': {
+        // An arc jumping somewhere in the dark: a crackle of snaps.
+        const p = this.panner(x, z, 2.6);
+        for (let i = 0; i < 5; i++) setTimeout(() => this.noise(p, 0.04 + Math.random() * 0.05, 3500 + Math.random() * 3000, 1, 0.5), i * (30 + Math.random() * 60));
+        this.tone(p, 'square', 180, 90, 0.25, 0.05);
+        break;
+      }
+      case 'lock': {
+        // A door slammed, and the bolt thrown.
+        const p = this.panner(x, z, 1.2);
+        this.noise(p, 0.35, 110, 0.8, 1.2, 'lowpass');
+        setTimeout(() => { this.noise(p, 0.05, 2600, 3, 0.6); this.tone(p, 'square', 900, 700, 0.06, 0.08); }, 220);
+        break;
+      }
+      case 'unlock': {
+        const p = this.panner(x, z, 1.2);
+        this.noise(p, 0.05, 2200, 3, 0.4);
+        setTimeout(() => this.noise(p, 0.04, 3000, 3, 0.3), 90);
+        break;
+      }
       case 'lightsOn':
         this.noise(this.panner(x, z, 2.6), 0.08, 2500, 2, 0.3);
         break;

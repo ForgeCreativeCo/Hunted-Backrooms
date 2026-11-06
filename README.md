@@ -29,7 +29,7 @@ A run is a descent through the Backrooms. Every exit leads one level deeper, and
 - The run is over when a level ends with nobody out. The end screen says how deep it got.
 - Solo as the monster, **Follow them down** takes you after the survivors. Solo as a human, finding an exit lets you watch the others try for the exits until they close; then you go down together.
 - Online, the next level starts for the whole room six seconds after the last one ends. A human player who didn't get out watches the rest of the run.
-- Each level is one of a set of described levels (`src/levels.ts`): how it's laid out, its air, light and hum, and the line shown as you arrive. The main way down is Level 0, Level 1, Level 2, Level 6, and round again (Levels 3 to 5 will slot in before Level 6). Below the first level, any exit has a 1 in 5 chance of leading to a side level instead, never two in a row: the Poolrooms or the Street. After a side level the run carries on down the main way.
+- Each level is one of a set of described levels (`src/levels.ts`): how it's laid out, its air, light and hum, and the line shown as you arrive. The main way down is Level 0 to Level 6 in order, then round again, darker and with fewer exits each time. Below the first level, any exit has a 1 in 5 chance of leading to a side level instead, never two in a row: the Poolrooms or the Street. After a side level the run carries on down the main way.
 - Under every level, the run tightens with depth. The numbers move in a straight line between these depths and stay put below depth 12 (`dialsFor` in `src/levels.ts`; starting guesses, not tuned):
 
   | Depth | 1 | 4 | 8 | 12+ |
@@ -67,6 +67,22 @@ Every level is generated from its seed, so online players all walk the same buil
 - Pipe tunnels: the maze left almost as it is, narrow and low (2.4 m), opening up only in a few small pump rooms. Pipes run along most walls, and caged lamps hang far apart. The air is hot and brown.
 - The heat: sprinting drains breath one and a half times as fast, and it comes back two thirds as fast.
 - Sixteen steam vents, each bursting for 4.5 seconds in every 11. While one hisses, nothing within 5 m of it carries to the monster: footsteps and breathing make no pulse, and AI wanderers there can't sense the monster right behind them either. The monster's map shows each vent, and the deaf ring round it while it hisses.
+
+### Level 3
+
+- An electrical station: machinery halls under 4.5 to 6.5 m ceilings, with catwalks along their high walls and transformers standing between the walkways. The air is cold and blue-grey, and everything hums loudly.
+- Blackouts cost half the usual dread here. But every few seconds a spark jumps somewhere dark (a dead or blacked-out circuit) and lights it for a moment, enough to be seen by.
+- Machinery covers the monster: within 4.5 m of a machine, AI wanderers can't sense it right behind them. The machines also break up a human's camera picture as they pass. The monster's map shows each machine.
+
+### Level 4
+
+- An empty open-plan office, grey and quiet, with every light on: clusters of four cubicles across wide floors, and windows in the outer walls looking out onto black.
+- A false calm. It has only one real exit, whatever the depth, and two more fake ones than the depth would give.
+
+### Level 5
+
+- A hotel: long straight corridors across the whole floor, red carpet, striped paper above a dark dado. Everything between the corridors is rooms, two or three cells wide, each with a numbered door, a bed and sometimes a lamp. Wanderers see a quarter further in its long, lit corridors.
+- Step all the way into a room, with the monster outside it, and the door slams and locks against the monster for 10 seconds. Whoever is inside can open it again; once it unlocks, it won't lock again for 20 seconds. AI wanderers being chased make for rooms, and hide in them while the door holds.
 
 ### Level 6
 

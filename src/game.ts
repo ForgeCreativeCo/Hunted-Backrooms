@@ -8,7 +8,7 @@ export type WState = 'explore' | 'alert' | 'flee' | 'hide' | 'escape' | 'panic' 
 export interface GameEvents {
   sound(
     kind: 'step' | 'splash' | 'exitDying' | 'scream' | 'blackout' | 'lightsOn' | 'shift' | 'chalk' | 'gasp' | 'catch' | 'roar' | 'escape' | 'breath'
-      | 'door' | 'doorShut' | 'phone' | 'pickup',
+      | 'door' | 'doorShut' | 'phone' | 'pickup' | 'spark' | 'lock' | 'unlock',
     x: number, z: number, loud: number, who?: Wanderer,
   ): void;
   caption(text: string, who: Wanderer | null): void;
@@ -190,6 +190,9 @@ export class Game {
   exitT = -1;
   /** Supply crates already emptied, by supply id. */
   taken: Uint8Array;
+  /** Seconds each light circuit stays lit by a spark (Level 3). */
+  spark: Float32Array;
+  private sparkT = 3;
   /** Fear the monster harvested on the levels above this one. */
   readonly banked: number;
   private distMonster: Int32Array = new Int32Array(0);
@@ -221,6 +224,7 @@ export class Game {
     this.def = opts.def ?? levelFor(seed, this.depth);
     this.level = new Level(ls, this.def, this.dials);
     this.taken = new Uint8Array(this.level.supplies.length);
+    this.spark = new Float32Array(this.level.circuitCount);
     this.rng = new RNG(ls + ':night');
     this.blackout = new Float32Array(this.level.circuitCount);
     this.phoneT = this.rng.range(45, 90);
@@ -270,7 +274,15 @@ export class Game {
 
   isLit(cell: number) {
     const i = this.level.circuit[cell];
-    return this.blackout[i] <= 0 && !this.level.dead[i];
+    return (this.blackout[i] <= 0 && !this.level.dead[i]) || this.spark[i] > 0;
+  }
+
+  /** What a Blackout costs on this level. */
+  get blackoutCost() { return Math.round(CFG.BLACKOUT_COST * (this.def.rules.blackoutCost ?? 1)); }
+
+  /** Is this spot within earshot of a machine (Level 3)? Its noise covers whatever is coming. */
+  nearMachine(x: number, z: number) {
+    return this.level.machines.some((m) => Math.hypot(m.x - x, m.z - z) < CFG.MACHINE_RADIUS);
   }
 
   fearMult(w: Wanderer) { return w.player ? 1 : CFG.FEAR_MULT[w.kind]; }
@@ -402,6 +414,8 @@ export class Game {
 
     this.dread = Math.min(CFG.DREAD_MAX, this.dread + (CFG.DREAD_BASE + totalFear * CFG.DREAD_PER_FEAR) * dt);
     this.updateDoors(dt);
+    this.updateLocks(dt);
+    this.updateSparks(dt);
     this.updatePhone(dt);
 
     for (const p of this.pulses) p.age += dt;
@@ -718,7 +732,7 @@ export class Game {
         w.next = -1;
         w.path = [];
       }
-    } else if (dm < CFG.NOTICE_RANGE && w.state !== 'panic' && L.los(w.x, w.z, m.x, m.z) && !this.masked(w.x, w.z) && this.rng.chance(0.8 * dt)) {
+    } else if (dm < CFG.NOTICE_RANGE && w.state !== 'panic' && L.los(w.x, w.z, m.x, m.z) && !this.masked(w.x, w.z) && !this.nearMachine(m.x, m.z) && this.rng.chance(0.8 * dt)) {
       // Something right behind them: they turn around.
       w.heading = Math.atan2(m.z - w.z, m.x - w.x);
       this.addFear(w, 6);
@@ -794,6 +808,7 @@ export class Game {
         if (w.next >= 0) {
           const door = L.doorOnEdge.get(L.edgeOf(w.cell, L.dirBetween(w.cell, w.next)));
           if (door && door.kind === 'swing' && door.open === 0) {
+            if (door.lockT > 0) { door.lockT = 0; door.lockCD = CFG.LOCK_COOLDOWN; }
             this.openDoor(door, L.cellAt(w.x, w.z) === door.cell ? -1 : 1);
           }
         }
@@ -993,12 +1008,21 @@ export class Game {
 
   private chooseFlee(w: Wanderer): number {
     const L = this.level;
+    const here = L.roomOf[w.cell];
+    if (here >= 0 && (L.doorOnEdge.get(L.rooms[here].door)?.lockT ?? 0) > 0) {
+      this.setState(w, 'hide', CFG.LOCK_TIME - 1);
+      this.say(w, LINES.hide);
+      return -1;
+    }
     const dirs = L.openDirs(w.cell);
     let best = -1, bestS = -Infinity;
     for (const d of dirs) {
       const n = L.neighbor(w.cell, d);
       let s = this.distMonster[n] + this.rng.next() * 0.6;
       if (n === w.prev) s -= 0.5;
+      // A hotel room they could shut themselves into.
+      const rm = L.roomOf[n];
+      if (rm >= 0 && here !== rm && (L.doorOnEdge.get(L.rooms[rm].door)?.lockCD ?? 1) <= 0) s += 2.5;
       if (s > bestS) { bestS = s; best = n; }
     }
     // Cornered in a dead end: cower.
@@ -1080,8 +1104,8 @@ export class Game {
     if (this.blackout[circuit] > 0 || this.level.dead[circuit]) return 'That circuit is already dark';
     const beam = this.beamBlocks();
     if (beam) return beam;
-    if (this.dread < CFG.BLACKOUT_COST) return 'Not enough dread';
-    this.dread -= CFG.BLACKOUT_COST;
+    if (this.dread < this.blackoutCost) return 'Not enough dread';
+    this.dread -= this.blackoutCost;
     this.blackout[circuit] = CFG.BLACKOUT_TIME;
     const c = this.level.circuitCenter[circuit];
     this.events.sound('blackout', c.x, c.z, 1);
@@ -1190,6 +1214,11 @@ export class Game {
           const into = -(vx * d.nx + vz * d.nz);
           if (d.kind === 'swing') {
             if (d.open !== 0 || Math.abs(dist) > r + 0.3 || into * Math.sign(dist || 1) <= 0) continue;
+            if (d.lockT > 0) {
+              if (b === this.monster) continue;
+              d.lockT = 0;
+              d.lockCD = CFG.LOCK_COOLDOWN;
+            }
             this.openDoor(d, dist > 0 ? -1 : 1); // swings away from whoever pushed it
             continue;
           }
@@ -1240,6 +1269,58 @@ export class Game {
         this.openDoor(d, 1);
       }
     }
+  }
+
+  /** Every few seconds, somewhere dark, a spark lights a circuit for a moment. */
+  private updateSparks(dt: number) {
+    for (let i = 0; i < this.spark.length; i++) if (this.spark[i] > 0) this.spark[i] = Math.max(0, this.spark[i] - dt);
+    if (!this.def.rules.sparks) return;
+    this.sparkT -= dt;
+    if (this.sparkT > 0) return;
+    this.sparkT = this.rng.range(1.5, 5);
+    const L = this.level;
+    const dark: number[] = [];
+    for (let i = 0; i < L.circuitCount; i++) if (L.dead[i] || this.blackout[i] > 0) dark.push(i);
+    if (!dark.length) return;
+    const i = this.rng.pick(dark);
+    this.spark[i] = CFG.SPARK_LIT;
+    const c = this.rng.pick(L.circuitCells[i]);
+    const p = L.center(c);
+    this.events.sound('spark', p.x, p.z, 1);
+  }
+
+  /**
+   * Hotel rooms: step all the way into one, with the monster outside, and its
+   * door slams shut and locks against the monster for a while. Whoever is
+   * inside can still open it.
+   */
+  private updateLocks(dt: number) {
+    const L = this.level;
+    if (!L.rooms.length) return;
+    const m = this.monster;
+    const mRoom = L.roomOf[L.cellAt(m.x, m.z)];
+    L.rooms.forEach((rm, i) => {
+      const d = L.doorOnEdge.get(rm.door);
+      if (!d) return;
+      if (d.lockT > 0) {
+        d.lockT = Math.max(0, d.lockT - dt);
+        if (d.lockT === 0) {
+          d.lockCD = CFG.LOCK_COOLDOWN;
+          this.events.sound('unlock', d.mx, d.mz, 1);
+        }
+        return;
+      }
+      if (d.lockCD > 0) { d.lockCD = Math.max(0, d.lockCD - dt); return; }
+      if (mRoom === i) return;
+      const inside = this.wanderers.find((w) => w.active && L.roomOf[w.cell] === i
+        && Math.abs((w.x - d.mx) * d.nx + (w.z - d.mz) * d.nz) > 0.9);
+      if (!inside) return;
+      d.open = 0;
+      d.lockT = CFG.LOCK_TIME;
+      this.events.sound('lock', d.mx, d.mz, 1);
+      // A slammed door carries.
+      this.pulses.push({ x: d.mx, z: d.mz, maxR: 3, age: 0, life: 1.1, fear: 0 });
+    });
   }
 
   /** Every so often, an old phone somewhere starts ringing. */

@@ -679,7 +679,8 @@ function updateHud() {
   bar('dreadfill', g.dread);
   ($('dreadfill') as HTMLElement).classList.remove('low');
   $('dreadnum').textContent = String(Math.floor(g.dread));
-  $('ab-blackout').classList.toggle('ready', g.dread >= CFG.BLACKOUT_COST);
+  $('ab-blackout').classList.toggle('ready', g.dread >= g.blackoutCost);
+  $('ab-blackout').querySelector('i')!.textContent = String(g.blackoutCost);
   $('ab-shift').classList.toggle('ready', g.dread >= CFG.SHIFT_COST);
   $('ab-blackout').classList.toggle('aiming', aim === 'blackout');
   $('ab-shift').classList.toggle('aiming', aim === 'shift');
@@ -687,7 +688,7 @@ function updateHud() {
   $('ab-seep').classList.toggle('ready', m.seepT > 0 || m.seepCD <= 0);
   $('ab-seep').querySelector('i')!.textContent = m.seepT > 0 ? `${m.seepT.toFixed(1)}s` : m.seepCD > 0 ? `${m.seepCD.toFixed(0)}s` : 'free';
   if (touchMode) {
-    $('tb-blackout').classList.toggle('dim', g.dread < CFG.BLACKOUT_COST);
+    $('tb-blackout').classList.toggle('dim', g.dread < g.blackoutCost);
     $('tb-shift').classList.toggle('dim', g.dread < CFG.SHIFT_COST);
     $('tb-blackout').classList.toggle('on', aim === 'blackout');
     $('tb-shift').classList.toggle('on', aim === 'shift');
@@ -832,7 +833,9 @@ function frame(now: number) {
   S.sound.update((i) => S.world.circuitLevel(i, t));
   syncCam();
   // A human's camera breaks up as the monster gets close, walls or no walls.
-  S.world.interference = me && !S.spectating ? Math.max(0, 1 - Math.hypot(me.x - g.monster.x, me.z - g.monster.z) / 10) : 0;
+  // The monster near you breaks up the picture; so does a machine's field, a little.
+  const machine = me ? Math.max(0, ...g.level.machines.map((mc) => 0.45 * (1 - Math.hypot(me.x - mc.x, me.z - mc.z) / 6))) : 0;
+  S.world.interference = me && !S.spectating ? Math.max(machine, 1 - Math.hypot(me.x - g.monster.x, me.z - g.monster.z) / 10) : 0;
   if (view === 'hunt' || mode === 'title' || mode === 'menu') S.world.render();
   else {
     S.world.updateListener();

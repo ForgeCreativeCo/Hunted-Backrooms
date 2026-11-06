@@ -197,8 +197,8 @@ const zoneLook = {
   /** Puddles on the floor: x, z, radius. */
   puddles: { value: Array.from({ length: MAX_PUDDLES }, () => new THREE.Vector3()) },
   puddleCount: { value: 0 },
-  /** 1 where the whole level is bare concrete (Level 1's warehouse). */
-  concrete: { value: 0 },
+  /** The level's surfaces: 0 office, 1 bare concrete, 2 hotel, 3 grey office. */
+  surf: { value: 0 },
 };
 
 /**
@@ -221,7 +221,7 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
     sh.uniforms.uStreetAlongX = zoneLook.streetAlongX;
     sh.uniforms.uPuddles = zoneLook.puddles;
     sh.uniforms.uPuddleCount = zoneLook.puddleCount;
-    sh.uniforms.uConcrete = zoneLook.concrete;
+    sh.uniforms.uSurf = zoneLook.surf;
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', `#include <common>
         attribute float aBright;
@@ -255,7 +255,8 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
         uniform float uStreetAlongX;
         uniform vec3 uPuddles[${MAX_PUDDLES}];
         uniform int uPuddleCount;
-        uniform float uConcrete;
+        uniform float uSurf;
+        bool hIs(float n) { return abs(uSurf - n) < 0.5; }
         varying float hBright;
         varying float hWalls;
         varying vec3 hW;
@@ -285,7 +286,7 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
         #ifdef SURF_WALL
           // Wallpaper mapped in world space, so walls of any height keep its scale.
           diffuseColor = vec4(diffuse, opacity) * texture2D(map, vec2((hW.x + hW.z) / 3.16, hW.y / 2.7));
-          if (uConcrete > 0.5) {
+          if (hIs(1.0)) {
             // Concrete block, laid in courses, each block a shade off its neighbours.
             vec2 bq = vec2((hW.x + hW.z) / 0.8, hW.y / 0.4);
             bq.x += mod(floor(bq.y), 2.0) * 0.5;
@@ -294,6 +295,18 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
             float bs = fract(sin(dot(floor(bq), vec2(12.9898, 78.233))) * 43758.5453);
             vec3 blk = vec3(0.5, 0.5, 0.47) * (0.88 + 0.14 * bs);
             diffuseColor.rgb = mix(blk * 0.72, blk, mortar);
+          }
+          if (hIs(2.0)) {
+            // Hotel: cream striped paper above a dark wood dado.
+            float stripe = step(0.5, fract((hW.x + hW.z) * 2.5));
+            diffuseColor.rgb = vec3(0.7, 0.6, 0.45) * (0.92 + 0.08 * stripe);
+            diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.27, 0.15, 0.09), step(hW.y, 0.9));
+            diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.2, 0.11, 0.07), step(0.88, hW.y) * step(hW.y, 0.95));
+          }
+          if (hIs(3.0)) {
+            // Grey office: the same paper, drained of colour.
+            float gl = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
+            diffuseColor.rgb = vec3(gl) * vec3(0.92, 0.95, 1.0) * 1.15;
           }
         #else
           #include <map_fragment>
@@ -310,13 +323,27 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
           float n1 = texture2D(uGrime, hW.xz * 0.03).r;
           float n2 = texture2D(uGrime, hW.xz * 0.19).g;
           hWet = smoothstep(0.58, 0.68, n1 * 0.75 + n2 * 0.25);
-          if (uConcrete > 0.5) {
+          if (hIs(1.0)) {
             // Poured concrete, with a joint every few metres and the odd crack.
             vec2 jq = abs(fract(hW.xz / 3.0 + 0.5) - 0.5) * 3.0;
             float joint = 1.0 - 0.35 * (1.0 - step(0.02, min(jq.x, jq.y)));
             float crack = smoothstep(0.015, 0.0, abs(n1 - 0.5)) * step(0.55, n2);
             diffuseColor.rgb = vec3(0.4, 0.4, 0.38) * joint * (1.0 - 0.45 * crack);
             hWet *= 0.4;
+          }
+          if (hIs(2.0)) {
+            // Hotel carpet: deep red, with a gold lattice.
+            vec2 cp = hW.xz * 1.4;
+            float dd = abs(fract(cp.x + cp.y) - 0.5) + abs(fract(cp.x - cp.y) - 0.5);
+            diffuseColor.rgb = mix(vec3(0.36, 0.06, 0.06), vec3(0.55, 0.4, 0.15), step(dd, 0.1));
+            hWet *= 0.3;
+          }
+          if (hIs(3.0)) {
+            // Blue-grey carpet tiles, each laid a little differently.
+            vec2 ct = floor(hW.xz / 0.5);
+            float cs = fract(sin(dot(ct, vec2(12.9898, 78.233))) * 43758.5453);
+            diffuseColor.rgb = vec3(0.3, 0.33, 0.38) * (0.92 + 0.1 * cs);
+            hWet *= 0.3;
           }
           diffuseColor.rgb *= (0.8 + 0.4 * n2) * mix(1.0, 0.45, hWet);
           // Puddles: dark, still water with a ragged edge.
@@ -389,10 +416,13 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
           vec2 tile = floor(hW.xz / 0.75);
           float hsh = fract(sin(dot(tile, vec2(12.9898, 78.233))) * 43758.5453);
           float ring = texture2D(uGrime, hW.xz * 0.11).r;
-          if (uConcrete > 0.5) {
+          if (hIs(1.0)) {
             // A bare concrete deck, streaked where water has run along it.
             diffuseColor.rgb = vec3(0.3, 0.3, 0.29) * (0.8 + 0.4 * ring);
+          } else if (hIs(2.0)) {
+            diffuseColor.rgb = vec3(0.72, 0.68, 0.6) * (0.92 + 0.1 * ring);
           } else {
+            if (hIs(3.0)) diffuseColor.rgb = vec3(dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114))) * 1.1;
             diffuseColor.rgb *= mix(1.0, 0.9, step(0.65, hsh));
             float stain = step(0.88, hsh) * smoothstep(0.4, 0.62, ring);
             diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.68, 0.55, 0.32), stain);
@@ -403,7 +433,9 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
         #endif
         #ifdef SURF_TRIM
           diffuseColor.rgb *= 0.8 + 0.2 * texture2D(uGrime, vec2((hW.x + hW.z) * 0.3, 0.2)).g;
-          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.26, 0.26, 0.25), uConcrete);
+          if (hIs(1.0)) diffuseColor.rgb = vec3(0.26, 0.26, 0.25);
+          if (hIs(2.0)) diffuseColor.rgb = vec3(0.2, 0.11, 0.07);
+          if (hIs(3.0)) diffuseColor.rgb = vec3(0.4, 0.42, 0.45);
           hPool = texture2D(uZoneTex, (hW.xz + normalize(hN).xz * 1.4) / uMapSize).g;
           diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.62, 0.7, 0.7), hPool);
         #endif`)
@@ -422,6 +454,27 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
   };
   m.customProgramCacheKey = () => `surf-${kind}`;
   return m;
+}
+
+/** A brass plate with a room number on it. */
+function roomNumber(text: string) {
+  const c = document.createElement('canvas');
+  c.width = 128;
+  c.height = 64;
+  const x = c.getContext('2d')!;
+  x.fillStyle = '#9a7a36';
+  x.fillRect(0, 0, 128, 64);
+  x.strokeStyle = '#5c4518';
+  x.lineWidth = 4;
+  x.strokeRect(3, 3, 122, 58);
+  x.fillStyle = '#2a1e08';
+  x.font = 'bold 40px Georgia, serif';
+  x.textAlign = 'center';
+  x.textBaseline = 'middle';
+  x.fillText(text, 64, 34);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
 }
 
 function instanced(geo: THREE.BufferGeometry, mat: THREE.Material, n: number) {
@@ -559,7 +612,7 @@ export class World3D {
     L.puddles.forEach((p, i) => zoneLook.puddles.value[i].set(p.x, p.z, p.r));
     zoneLook.puddleCount.value = L.puddles.length;
     const concrete = L.def.look.surface === 'concrete';
-    zoneLook.concrete.value = concrete ? 1 : 0;
+    zoneLook.surf.value = ({ office: 0, concrete: 1, hotel: 2, grey: 3 } as const)[L.def.look.surface];
     const grime = T.grime();
     const paper = T.wallpaper(), carpet = T.carpet(), tiles = T.ceiling();
 
@@ -1105,6 +1158,12 @@ export class World3D {
           box(frame, knobMat, 0.05, 0.05, 0.05, d.w / 2 - 0.12, d.y0 + 1.0, front * 0.11);
         } else box(frame, voidMat, d.w, d.h, 0.004, 0, d.y0 + d.h / 2, z);
       }
+      if (d.label) {
+        const plate = new THREE.Mesh(new THREE.PlaneGeometry(0.22, 0.12), new THREE.MeshStandardMaterial({ map: roomNumber(d.label), roughness: 0.35, metalness: 0.6 }));
+        plate.position.set(d.w / 2 + 0.25, 1.55, front * 0.09);
+        plate.rotation.y = front > 0 ? 0 : Math.PI;
+        frame.add(plate);
+      }
       this.scene.add(frame);
 
       // The panel swings on a hinge at one end of the opening.
@@ -1219,6 +1278,7 @@ export class World3D {
 
   /** Flickering brightness per circuit, from the game's blackout timers. */
   circuitLevel(i: number, t: number): number {
+    if (this.game.spark[i] > 0) return Math.sin(t * 90 + i) > -0.3 ? 1 : 0.2;
     if (this.game.level.dead[i]) return 0;
     const b = this.game.blackout[i];
     if (b <= 0) return 1;

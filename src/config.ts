@@ -61,6 +61,12 @@ export const CFG = {
   VENT_PERIOD: 11, // seconds from one burst of steam to the next
   VENT_ON: 4.5, // seconds each burst lasts
   VENT_RADIUS: 5, // metres: within this of a hissing vent, nothing is heard
+  // Machinery (Level 3)
+  MACHINE_RADIUS: 4.5, // metres: within this of a machine, its noise covers the monster's approach
+  SPARK_LIT: 0.45, // seconds a spark lights a dark circuit
+  // Hotel rooms (Level 5)
+  LOCK_TIME: 10, // seconds a room's door stays locked against the monster
+  LOCK_COOLDOWN: 20, // seconds after it unlocks before it will lock again
 
   // Human players
   MAX_HUMANS: 4,
