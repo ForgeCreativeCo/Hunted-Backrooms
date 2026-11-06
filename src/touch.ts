@@ -2,6 +2,8 @@
 // screen, drag to look on the right, and buttons for everything the keys do.
 
 const STICK_R = 56; // px the knob can travel from where the thumb landed
+const SPRINT_ON = 1.7; // × STICK_R: how far past the rim the thumb must go to sprint
+const SPRINT_OFF = 1.4; // …and how far back it must come to walk again
 const TAP_MS = 260;
 const TAP_PX = 12;
 
@@ -18,7 +20,7 @@ interface Drag {
 export class TouchControls {
   /** Stick direction: x right, y forward, length 0..1. */
   move = { x: 0, y: 0 };
-  /** Pushed to the rim of the stick: sprint. */
+  /** Dragged well past the rim of the stick: sprint. */
   sprint = false;
   onLook: (dx: number, dy: number) => void = () => {};
   /** A quick tap anywhere on the play area, in client pixels. */
@@ -86,7 +88,9 @@ export class TouchControls {
     const dead = 0.18;
     if (k < dead) this.move = { x: 0, y: 0 };
     else this.move = { x: ox / STICK_R, y: -oy / STICK_R };
-    this.sprint = k > 0.95;
+    // Walking uses the whole stick; sprinting means dragging well past its rim.
+    // Starts and stops at different distances, so it doesn't stutter at the line.
+    this.sprint = len > STICK_R * (this.sprint ? SPRINT_OFF : SPRINT_ON);
     this.base.classList.toggle('rim', this.sprint);
   }
 
