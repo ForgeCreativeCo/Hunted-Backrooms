@@ -43,6 +43,8 @@ export interface Door {
   /** 0 closed; 1 or -1 open, swung towards +n or -n. */
   open: number;
   openT: number;
+  /** If set, the only way it ever swings (1 or -1); 0 swings away from whoever pushes it. */
+  swing: number;
 }
 
 export type PropType = 'chair' | 'desk' | 'cabinet' | 'crt' | 'mattress' | 'lamp' | 'phone' | 'mannequin' | 'stairs' | 'paper' | 'speaker' | 'house' | 'fence' | 'mailbox' | 'fan' | 'stop';
@@ -119,6 +121,12 @@ export class Level {
   street: Street | null = null;
   /** The Street's hall in cells. */
   private streetCells: { x: number; y: number; w: number; h: number } | null = null;
+  /**
+   * The house you can walk through: its side (d), the first of its two wall
+   * edges along that side (i), which of them its back door is on (j), that
+   * edge's key, and the maze cell the back door opens into.
+   */
+  streetBack: { d: number; i: number; j: number; key: number; outer: number } | null = null;
   exits: Exit[] = [];
   exitCells = new Set<number>();
   spawnCell = 0;
@@ -548,7 +556,9 @@ export class Level {
       const alongX = rng.chance(0.5);
       const w = alongX ? along : WIDE, h = alongX ? WIDE : along;
       if (w > W || h > H) continue;
-      const x = rng.int(0, W - w + 1), y = rng.int(0, H - h + 1);
+      // Never against the edge of the map at either end, so the road always leads somewhere both ways.
+      if ((alongX ? W - w : H - h) < 2) continue;
+      const x = alongX ? rng.int(1, W - w) : rng.int(0, W - w + 1), y = alongX ? rng.int(0, H - h + 1) : rng.int(1, H - h);
       let clear = true;
       for (let yy = y - 1; yy <= y + h && clear; yy++) {
         for (let xx = x - 1; xx <= x + w && clear; xx++) {
@@ -589,13 +599,41 @@ export class Level {
         byEnd.set(key, [...(byEnd.get(key) ?? []), k]);
       }
       for (const ks of byEnd.values()) this.walls[rng.pick(ks)] = 0;
-      for (const k of [...rng.shuffle(ends), ...rng.shuffle(sides)]) {
-        if (this.connected()) break;
+      // If that cut part of the level off, open just enough wall to reach it again:
+      // each time, one wall whose far side can't currently be reached.
+      const order = [...rng.shuffle(ends), ...rng.shuffle(sides)];
+      const hall = this.cell(x, y);
+      for (;;) {
+        const dist = this.bfs([hall]);
+        if (!dist.includes(-1)) break;
+        const k = order.find((e) => this.walls[e] && this.edgeCells(e).some((c) => c >= 0 && dist[c] < 0));
+        if (k === undefined) break;
         this.walls[k] = 0;
       }
       const CS = this.CS;
       this.streetCells = { x, y, w, h };
       this.street = { x0: x * CS, z0: y * CS, x1: (x + w) * CS, z1: (y + h) * CS, alongX };
+
+      // One house, different every night, has a way through: in at its front
+      // door, along its hall, and out of a back door into the maze behind.
+      const n = alongX ? w : h;
+      const options: { d: number; i: number; j: number; key: number; outer: number }[] = [];
+      for (const d of alongX ? [0, 2] : [1, 3]) {
+        for (let i = 0; i + 1 < n; i++) {
+          const ki = this.edgeOf(this.streetSide(d, i), d), kj = this.edgeOf(this.streetSide(d, i + 1), d);
+          if (!this.walls[ki] || !this.walls[kj]) continue;
+          for (const j of [i, i + 1]) {
+            const outer = this.neighbor(this.streetSide(d, j), d);
+            if (outer < 0 || this.zone[outer] === Zone.Manila || this.zone[outer] === Zone.Street) continue;
+            options.push({ d, i, j, key: this.edgeOf(this.streetSide(d, j), d), outer });
+          }
+        }
+      }
+      if (options.length) {
+        const o = rng.pick(options);
+        this.walls[o.key] = 0;
+        this.streetBack = o;
+      }
       return;
     }
   }
@@ -605,22 +643,31 @@ export class Level {
    * between them, mailboxes at the kerb, a stop sign, fans turning slowly far
    * overhead, and one figure standing in the road.
    */
+  /** The Street's cell i along its side whose walls face direction d. */
+  private streetSide(d: number, i: number) {
+    const sc = this.streetCells!, alongX = sc.w > sc.h;
+    return alongX
+      ? this.cell(sc.x + i, d === 0 ? sc.y : sc.y + sc.h - 1)
+      : this.cell(d === 3 ? sc.x : sc.x + sc.w - 1, sc.y + i);
+  }
+
   private furnishStreet(rng: RNG, prop: (p: Partial<Prop> & { type: PropType; x: number; z: number }) => Prop) {
     const sc = this.streetCells, st = this.street;
     if (!sc || !st) return;
     const CS = this.CS;
     const n = st.alongX ? sc.w : sc.h;
+    const back = this.streetBack;
     // One long side at a time: d is the outward direction of its walls.
     const sides = st.alongX ? [0, 2] : [1, 3];
     for (const d of sides) {
       const nx = -DX[d], nz = -DY[d]; // into the hall
       const ry = Math.atan2(nx, nz);
-      const cellAt = (i: number) => st.alongX
-        ? this.cell(sc.x + i, d === 0 ? sc.y : sc.y + sc.h - 1)
-        : this.cell(d === 3 ? sc.x : sc.x + sc.w - 1, sc.y + i);
+      const cellAt = (i: number) => this.streetSide(d, i);
       const walled = (i: number) => {
         const k = this.edgeOf(cellAt(i), d);
-        return this.walls[k] === 1 && !this.doorOnEdge.has(k);
+        if (back && k === back.key) return true; // the way-through house's back door
+        // A door hung on the far side of the wall is the maze's business, not the house's.
+        return this.walls[k] === 1;
       };
       // The wall line, and a point on it a distance a along from the street's start.
       const c0 = this.center(cellAt(0));
@@ -633,9 +680,23 @@ export class Level {
       let i = 0;
       while (i < n) {
         if (!walled(i)) { i++; continue; }
-        const span = i + 1 < n && walled(i + 1) ? 2 : 1;
+        const throughHere = !!back && back.d === d && back.i === i;
+        // Leave the way-through house its two walls, whatever the houses before it took.
+        const span = throughHere ? 2 : back && back.d === d && back.i === i + 1 ? 1 : i + 1 < n && walled(i + 1) ? 2 : 1;
         const a0 = i * CS, a1 = (i + span) * CS;
-        if (span === 2) {
+        if (throughHere) {
+          // Its door lines up with the opening behind it, half a cell either side of centre.
+          const mid = (a0 + a1) / 2, doorA = (back!.j + 0.5) * CS;
+          const sgn = st.alongX ? nz : -nx; // local +x, measured along the road
+          const v = rng.int(3) | 8 | (sgn * (doorA - mid) > 0 ? 16 : 0);
+          prop({ type: 'house', ...at(mid, 0.08), ry, v });
+          // Solid either side of its hall, open down the middle.
+          solid(a0, doorA - 0.5, 0, 0.93);
+          solid(doorA + 0.5, a1, 0, 0.93);
+          const ma = mid + (doorA > mid ? -0.4 : 0.4);
+          prop({ type: 'mailbox', ...at(ma, 2.25), ry: ry + Math.PI });
+          solid(ma - 0.08, ma + 0.08, 2.17, 2.33);
+        } else if (span === 2) {
           // A house two cells wide, with a strip of fence either side of it.
           const v = rng.int(3) | (rng.chance(0.5) ? 4 : 0);
           const p = at((a0 + a1) / 2, 0.08);
@@ -691,7 +752,7 @@ export class Level {
       nx: s.horizontal ? 0 : toward, nz: s.horizontal ? toward : 0,
       mx: (s.x1 + s.x2) / 2, mz: (s.z1 + s.z2) / 2,
       tx: s.horizontal ? 1 : 0, tz: s.horizontal ? 0 : 1,
-      w: 0.95, h: 2.05, y0: 0, variant: null, free: false, link: -1, open: 0, openT: 0,
+      w: 0.95, h: 2.05, y0: 0, variant: null, free: false, link: -1, open: 0, openT: 0, swing: 0,
       ...opts,
     };
     this.doors.push(d);
@@ -731,6 +792,14 @@ export class Level {
     const { W, H, CS } = this;
     const exitEdges = new Set(this.exits.map((e) => this.edgeOf(e.cell, e.dir)));
     const doorCell = new Uint8Array(this.cells);
+
+    // The way-through house's back door, out into the maze. It only ever swings
+    // outwards: inwards, it would hit the walls of the house's narrow hall.
+    const back = this.streetBack;
+    if (back) {
+      this.makeDoor('swing', back.key, back.outer, { swing: 1 });
+      for (const c of this.edgeCells(back.key)) doorCell[c] = 1;
+    }
 
     // Doorway doors on open edges flanked by walls, so they read as doorways.
     const swing: number[] = [];

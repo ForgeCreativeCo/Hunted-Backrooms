@@ -952,7 +952,7 @@ export class Game {
   // ---- Doors ----
 
   openDoor(d: Door, sign: number) {
-    d.open = sign || 1;
+    d.open = d.swing || sign || 1;
     d.openT = 0;
     this.events.sound('door', d.mx, d.mz, 1);
     // The monster can feel a door move anywhere in its building.
