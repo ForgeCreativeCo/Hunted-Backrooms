@@ -72,9 +72,11 @@ export interface Box {
 /**
  * What a stretch of Level 0 is like. Most of it is bare: the same wallpaper,
  * carpet and lights for ever. Furniture gathers in a few pockets; one region
- * has no power at all; one has holes in its darker carpet; one room is red.
+ * has no power at all; one has holes in its darker carpet; one room is red;
+ * and one stretch gives way to the Poolrooms: white tile, ankle-deep water,
+ * and light that comes from nowhere.
  */
-export enum Zone { Bare, Furnished, Dark, Pitfalls, Manila }
+export enum Zone { Bare, Furnished, Dark, Pitfalls, Manila, Pool }
 
 /** The floor shader cuts this many holes at most. */
 export const MAX_PITS = 48;
@@ -187,6 +189,9 @@ export class Level {
   }
 
   isWall(key: number) { return this.walls[key] === 1; }
+
+  /** Is this spot in the Poolrooms' water? */
+  wet(wx: number, wz: number) { return this.zone[this.cellAt(wx, wz)] === Zone.Pool; }
 
   open(c: number, dir: number) { return this.walls[this.edgeOf(c, dir)] === 0; }
 
@@ -489,12 +494,21 @@ export class Level {
     this.dead = new Uint8Array(this.circuitCount);
     const circuits = zr.shuffle(Array.from({ length: this.circuitCount }, (_, i) => i))
       .filter((i) => i !== this.circuit[spawn]);
-    const kinds = [Zone.Dark, Zone.Pitfalls, Zone.Furnished, Zone.Furnished, Zone.Furnished];
+    const kinds = [Zone.Dark, Zone.Pitfalls, Zone.Furnished, Zone.Furnished, Zone.Furnished, Zone.Pool];
     kinds.forEach((z, j) => {
       const i = circuits[j];
       if (i === undefined) return;
       if (z === Zone.Dark) this.dead[i] = 1;
-      for (const c of this.circuitCells[i]) if (this.zone[c] !== Zone.Manila) this.zone[c] = z;
+      for (const c of this.circuitCells[i]) {
+        if (this.zone[c] === Zone.Manila) continue;
+        this.zone[c] = z;
+        // The Poolrooms have no light fittings: the light is just there. Their
+        // rooms run tall, never cramped.
+        if (z === Zone.Pool) {
+          this.panel[c] = 0;
+          this.ceil[c] = Math.max(this.ceil[c], 3.4);
+        }
+      }
     });
   }
 
@@ -660,7 +674,7 @@ export class Level {
     // Debris and furniture: thick in the furnished pockets, a rare thing anywhere else.
     const density = (c: number) => {
       const z = this.zone[c];
-      return z === Zone.Furnished ? 1 : z === Zone.Manila || pitCell[c] ? 0 : 0.12;
+      return z === Zone.Furnished ? 1 : z === Zone.Manila || z === Zone.Pool || pitCell[c] ? 0 : 0.12;
     };
     const prop =(p: Partial<Prop> & { type: PropType; x: number; z: number }) => {
       const full: Prop = { y: 0, ry: 0, rx: 0, rz: 0, ceil: false, cell: this.cellAt(p.x, p.z), v: 0, ...p };

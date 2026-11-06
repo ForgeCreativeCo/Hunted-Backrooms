@@ -26,6 +26,7 @@ Every night is generated from its seed, so online players all walk the same buil
 - One region never had power. Its lights are dead and silent all night; the monster sees there in night vision, and its Blackout does nothing.
 - The Pitfalls: a region of darker, soaked carpet with holes in the floor that drop away into black. You can stand at the lip but not cross.
 - The Manila Room: one room walled in with as few ways in as the level allows, its wallpaper gone red.
+- The Poolrooms: one region where the wallpaper gives way to white tile and the carpet to ankle-deep water, under tall ceilings and a soft light with no fittings to come from. Every step splashes: footsteps there carry 1.7 times as far, and even crouch-walking makes noise. Standing still and holding your breath still works. The monster's map shows the region in pale blue.
 
 - Rooms come in odd sizes: endless one-cell halls, huge pillared halls, closets. Some ceilings are cramped; some rise far higher than the building around them could allow.
 - Doors open when you walk into them, and close themselves when nobody is watching. Doorway doors lead on. Doors hung on walls mostly lead nowhere: bricks, a black void, another door, or a door too high to reach. A few pairs of tall doors open onto the dark and carry you to their partner somewhere else in the level.

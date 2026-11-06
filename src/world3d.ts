@@ -20,6 +20,9 @@ const FOG_DARK = new THREE.Color(0x040507);
 const POOL = 8; // real point lights, moved to the nearest visible fixtures each frame
 const POOL_LOW = 4; // on low graphics: every light costs every lit pixel, and tablets feel it
 const POOL_REACH = 18;
+// The Poolrooms (no relation to the light pool above): their water line, and the air's colour in there.
+const WATER_Y = 0.07;
+const FOG_POOLROOMS = new THREE.Color(0x6f8f8c);
 
 // Film grain, a slight colour fringe and a vignette: the monster's eyes.
 // In a dark circuit they switch to night vision: whatever light there is,
@@ -242,6 +245,15 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
         varying vec3 hL;
         varying vec3 hN;
         float hEdge(float d) { return mix(0.42, 1.0, smoothstep(0.0, 0.75, d)); }
+        // The Poolrooms' small white tiles: each one a shade off its neighbours, grey grout between.
+        vec3 hTile(vec2 p) {
+          vec2 q = p / 0.25;
+          vec2 f = fract(q);
+          float grout = step(0.06, f.x) * step(0.06, f.y);
+          float shade = fract(sin(dot(floor(q), vec2(12.9898, 78.233))) * 43758.5453);
+          return mix(vec3(0.5, 0.58, 0.58), vec3(0.86, 0.92, 0.92) * (0.95 + 0.07 * shade), grout);
+        }
+        float hPool = 0.0;
         float hAO() {
           int m = int(hWalls + 0.5);
           float ao = 1.0;
@@ -275,6 +287,10 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
           // The Pitfalls' carpet: darker and browner, as if soaked through.
           float pitfall = texture2D(uCellTex, hW.xz / uMapSize).g;
           diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.42, 0.36, 0.28), pitfall);
+          // The Poolrooms: tiles under a few centimetres of clear water.
+          hPool = texture2D(uZoneTex, hW.xz / uMapSize).g;
+          diffuseColor.rgb = mix(diffuseColor.rgb, hTile(hW.xz) * vec3(0.78, 0.9, 0.92) * (0.9 + 0.2 * n2), hPool);
+          hWet = max(hWet, hPool);
           diffuseColor.rgb *= hAO();
         #endif
         #ifdef SURF_WALL
@@ -295,6 +311,10 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
           float manila = texture2D(uZoneTex, (hW.xz + normalize(hN).xz * 1.4) / uMapSize).r;
           float wl = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
           diffuseColor.rgb = mix(diffuseColor.rgb, vec3(wl * 1.55, wl * 0.32, wl * 0.26), manila);
+          // The Poolrooms: tile instead of wallpaper, only a little grimy at the waterline.
+          hPool = texture2D(uZoneTex, (hW.xz + normalize(hN).xz * 1.4) / uMapSize).g;
+          vec3 tiled = hTile(vec2(along, wy)) * (0.94 + 0.08 * mottle) * mix(0.82, 1.0, smoothstep(0.0, 0.35, wy));
+          diffuseColor.rgb = mix(diffuseColor.rgb, tiled, hPool);
         #endif
         #ifdef SURF_CEIL
           vec2 tile = floor(hW.xz / 0.75);
@@ -303,10 +323,14 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
           diffuseColor.rgb *= mix(1.0, 0.9, step(0.65, hsh));
           float stain = step(0.88, hsh) * smoothstep(0.4, 0.62, ring);
           diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.68, 0.55, 0.32), stain);
+          hPool = texture2D(uZoneTex, hW.xz / uMapSize).g;
+          diffuseColor.rgb = mix(diffuseColor.rgb, hTile(hW.xz), hPool);
           diffuseColor.rgb *= mix(0.55, 1.0, hAO());
         #endif
         #ifdef SURF_TRIM
           diffuseColor.rgb *= 0.8 + 0.2 * texture2D(uGrime, vec2((hW.x + hW.z) * 0.3, 0.2)).g;
+          hPool = texture2D(uZoneTex, (hW.xz + normalize(hN).xz * 1.4) / uMapSize).g;
+          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.62, 0.7, 0.7), hPool);
         #endif`)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
         roughnessFactor = mix(roughnessFactor, 0.28, hWet);`)
@@ -316,6 +340,8 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
         #else
           float gate = hBright;
         #endif
+        // The Poolrooms are lit from nowhere: every surface gives off a soft, even daylight.
+        reflectedLight.indirectDiffuse += diffuseColor.rgb * vec3(0.95, 1.0, 1.0) * hPool * 0.3;
         reflectedLight.indirectDiffuse *= gate;
         reflectedLight.indirectSpecular *= gate;`);
   };
@@ -400,6 +426,9 @@ export class World3D {
   private eye: number = CFG.HUMAN_EYE;
   private creature = new Creature();
   private spots: THREE.SpotLight[] = [];
+  private waterTime = { value: 0 };
+  /** 0..1, eased: how far into the Poolrooms the view is. */
+  private poolAir = 0;
 
   constructor(private game: Game, canvas: HTMLCanvasElement, low = false) {
     const L = game.level;
@@ -426,6 +455,7 @@ export class World3D {
     for (let c = 0; c < L.cells; c++) {
       (this.cellTex.image.data as Uint8Array)[c * 4 + 1] = L.zone[c] === Zone.Pitfalls ? 255 : 0;
       zoneData[c * 4] = L.zone[c] === Zone.Manila ? 255 : 0;
+      zoneData[c * 4 + 1] = L.zone[c] === Zone.Pool ? 255 : 0;
     }
     this.cellTex.needsUpdate = true;
     cellLight.tex.value = this.cellTex;
@@ -539,6 +569,7 @@ export class World3D {
     this.scene.add(this.pillars);
 
     this.buildPits(grime);
+    this.buildWater();
     this.buildExits();
     this.buildDoors(grime);
     this.buildFurniture(grime);
@@ -698,6 +729,71 @@ export class World3D {
     mat.fog = false;
     const mesh = new THREE.Mesh(geo, mat);
     mesh.frustumCulled = false;
+    this.scene.add(mesh);
+  }
+
+  /**
+   * The Poolrooms' water: one sheet over every pool cell, a hand's depth up.
+   * Clear enough to see the tile through, with slow ripples, light caustics,
+   * and a pale sheen at a glancing angle. Dark when its circuit is.
+   */
+  private buildWater() {
+    const L = this.game.level;
+    const pos: number[] = [];
+    const h = CFG.CS / 2;
+    for (let c = 0; c < L.cells; c++) {
+      if (L.zone[c] !== Zone.Pool) continue;
+      const p = L.center(c);
+      const x0 = p.x - h, x1 = p.x + h, z0 = p.z - h, z1 = p.z + h;
+      pos.push(x0, WATER_Y, z0, x0, WATER_Y, z1, x1, WATER_Y, z1, x0, WATER_Y, z0, x1, WATER_Y, z1, x1, WATER_Y, z0);
+    }
+    if (!pos.length) return;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    const mat = new THREE.ShaderMaterial({
+      uniforms: {
+        ...THREE.UniformsUtils.clone(THREE.UniformsLib.fog),
+        uTime: this.waterTime,
+        uCam: { value: this.camera.position },
+        uCellTex: cellLight.tex,
+        uMapSize: cellLight.size,
+      },
+      vertexShader: /* glsl */ `
+        #include <fog_pars_vertex>
+        varying vec3 vW;
+        void main() {
+          vec4 w = modelMatrix * vec4(position, 1.0);
+          vW = w.xyz;
+          vec4 mvPosition = viewMatrix * w;
+          gl_Position = projectionMatrix * mvPosition;
+          #include <fog_vertex>
+        }`,
+      fragmentShader: /* glsl */ `
+        uniform float uTime;
+        uniform vec3 uCam;
+        uniform sampler2D uCellTex;
+        uniform vec2 uMapSize;
+        varying vec3 vW;
+        #include <fog_pars_fragment>
+        void main() {
+          vec2 p = vW.xz;
+          float lit = texture2D(uCellTex, p / uMapSize).r;
+          float w = sin(p.x * 3.1 + uTime * 1.3) + sin(p.y * 2.7 - uTime * 1.1) + 0.5 * sin((p.x + p.y) * 4.3 + uTime * 1.7);
+          float caustic = pow(abs(sin(p.x * 4.0 + w * 0.8 + uTime * 0.5) * sin(p.y * 4.4 - w * 0.7 + uTime * 0.4)), 5.0);
+          vec3 view = normalize(uCam - vW);
+          float fres = pow(1.0 - clamp(view.y, 0.0, 1.0), 4.0);
+          vec3 col = vec3(0.42, 0.72, 0.76) * (0.16 + 0.03 * w) + caustic * vec3(0.5, 0.65, 0.65) + fres * vec3(0.8, 0.95, 0.95) * (0.8 + 0.1 * w);
+          float a = 0.22 + 0.06 * w * 0.3 + fres * 0.55 + caustic * 0.2;
+          gl_FragColor = vec4(col * mix(0.04, 1.0, lit), clamp(a, 0.0, 0.9));
+          #include <fog_fragment>
+        }`,
+      transparent: true,
+      depthWrite: false,
+      fog: true,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.frustumCulled = false;
+    mesh.renderOrder = 1;
     this.scene.add(mesh);
   }
 
@@ -1007,9 +1103,13 @@ export class World3D {
     this.darkvision.distance = human ? 4 : 8 + this.nightVision * 6;
     this.darkvision.color.set(human ? 0x9aa4b8 : 0x6f86c0);
 
+    // In the Poolrooms the air turns pale and clear.
+    const inPool = L.wet(vx, vz) ? 1 : 0;
+    this.poolAir += (inPool - this.poolAir) * Math.min(1, dt * 1.5);
+    this.waterTime.value = t;
     const fog = this.scene.fog as THREE.FogExp2;
-    fog.color.copy(FOG_DARK).lerp(FOG_LIT, here);
-    fog.density = 0.042 + (1 - here) * 0.03 - this.nightVision * 0.025;
+    fog.color.copy(FOG_DARK).lerp(this.col.copy(FOG_LIT).lerp(FOG_POOLROOMS, this.poolAir), here);
+    fog.density = 0.042 + (1 - here) * 0.03 - this.nightVision * 0.025 - this.poolAir * here * 0.014;
     (this.scene.background as THREE.Color).copy(fog.color);
 
     // Dust drifts and wraps around the camera.
@@ -1173,7 +1273,8 @@ export class World3D {
           map: this.chalkTex, transparent: true, depthWrite: false, roughness: 1, polygonOffset: true, polygonOffsetFactor: -2,
         }));
         const p = g.level.center(cell);
-        mesh.position.set(p.x, 0.015, p.z);
+        // In the Poolrooms, drawn just above the waterline so the water's sheen never hides it.
+        mesh.position.set(p.x, g.level.zone[cell] === Zone.Pool ? WATER_Y + 0.01 : 0.015, p.z);
         this.chalkGroup.add(mesh);
         this.chalkMeshes.set(cell, mesh);
       }

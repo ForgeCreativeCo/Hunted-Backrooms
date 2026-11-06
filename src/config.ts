@@ -45,6 +45,7 @@ export const CFG = {
   STAMINA_DRAIN: 14,
   STAMINA_REGEN: 8,
   FEAR_MULT: { panicker: 1.4, mapper: 0.85 },
+  SPLASH: 1.7, // footsteps in the Poolrooms' water carry this much further
 
   // Human players
   MAX_HUMANS: 4,

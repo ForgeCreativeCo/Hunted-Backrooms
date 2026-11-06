@@ -6,7 +6,7 @@ export type WState = 'explore' | 'alert' | 'flee' | 'hide' | 'escape' | 'panic' 
 
 export interface GameEvents {
   sound(
-    kind: 'step' | 'scream' | 'blackout' | 'lightsOn' | 'shift' | 'chalk' | 'gasp' | 'catch' | 'roar' | 'escape' | 'breath'
+    kind: 'step' | 'splash' | 'scream' | 'blackout' | 'lightsOn' | 'shift' | 'chalk' | 'gasp' | 'catch' | 'roar' | 'escape' | 'breath'
       | 'door' | 'doorShut' | 'phone',
     x: number, z: number, loud: number, who?: Wanderer,
   ): void;
@@ -414,8 +414,10 @@ export class Game {
       w.stepT -= dt;
       if (w.stepT <= 0) {
         w.stepT = sprinting ? 0.3 : w.crouch ? 0.8 : 0.55;
-        const loud = (sprinting ? 2.2 : w.crouch ? 0.4 : 1) * (1 + w.fear / 150);
-        this.emitNoise(w, loud, !w.crouch);
+        // In the Poolrooms' water every step splashes, even a crouched one.
+        const wet = this.level.wet(w.x, w.z);
+        const loud = (sprinting ? 2.2 : w.crouch ? 0.4 : 1) * (1 + w.fear / 150) * (wet ? CFG.SPLASH : 1);
+        this.emitNoise(w, loud, !w.crouch || wet, wet);
       }
     } else {
       w.breathT -= dt;
@@ -634,8 +636,9 @@ export class Game {
       w.stepT -= dt;
       if (w.stepT <= 0) {
         w.stepT = sprinting ? 0.3 : 0.55;
-        let loud = (sprinting ? 2.2 : 1) * (w.kind === 'panicker' ? 1.4 : 1) * (1 + w.fear / 150);
-        this.emitNoise(w, loud);
+        const wet = L.wet(w.x, w.z);
+        const loud = (sprinting ? 2.2 : 1) * (w.kind === 'panicker' ? 1.4 : 1) * (1 + w.fear / 150) * (wet ? CFG.SPLASH : 1);
+        this.emitNoise(w, loud, true, wet);
       }
     } else {
       w.breathT -= dt;
@@ -669,14 +672,14 @@ export class Game {
     }
   }
 
-  private emitNoise(w: Wanderer, loud: number, audible = true) {
+  private emitNoise(w: Wanderer, loud: number, audible = true, splash = false) {
     w.lastHeardT = this.t;
     w.heardX = w.x;
     w.heardZ = w.z;
     const p = { x: w.x, z: w.z, maxR: loud * 2.2, age: 0, life: 1.1, fear: w.fear };
     this.pulses.push(p);
     this.events.pulse?.(p, w);
-    if (audible) this.events.sound('step', w.x, w.z, loud);
+    if (audible) this.events.sound(splash ? 'splash' : 'step', w.x, w.z, loud);
   }
 
   private arrive(w: Wanderer) {

@@ -359,6 +359,14 @@ export class Sound {
       case 'step':
         this.noise(this.panner(x, z, 0.1), 0.09, 300 + Math.random() * 200, 1.2, 0.25 * loud);
         break;
+      case 'splash': {
+        // A foot coming down in shallow water: a wet slap, then the drops falling back.
+        const p = this.panner(x, z, 0.1);
+        this.noise(p, 0.16, 700 + Math.random() * 400, 0.7, 0.3 * loud);
+        this.noise(p, 0.3, 2600 + Math.random() * 900, 1.5, 0.1 * loud);
+        setTimeout(() => this.noise(p, 0.12, 3800 + Math.random() * 1500, 4, 0.05 * loud), 90 + Math.random() * 80);
+        break;
+      }
       case 'chalk':
         for (let i = 0; i < 3; i++) setTimeout(() => this.noise(this.panner(x, z, 0.3), 0.18, 3200, 3, 0.18), i * 220);
         break;

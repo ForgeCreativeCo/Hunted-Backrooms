@@ -1,5 +1,6 @@
 import { CFG } from './config';
 import { Game } from './game';
+import { Zone } from './level';
 
 export type Aim = 'none' | 'blackout' | 'shift';
 
@@ -69,7 +70,8 @@ export class SenseView {
     // Cells: faint warm where lit, cold where dark.
     for (let c = 0; c < L.cells; c++) {
       const lvl = circuitLevel(L.circuit[c]);
-      ctx.fillStyle = lvl > 0.5 ? 'rgba(190,165,80,0.10)' : 'rgba(40,60,110,0.10)';
+      const pool = L.zone[c] === Zone.Pool;
+      ctx.fillStyle = lvl > 0.5 ? (pool ? 'rgba(110,190,200,0.16)' : 'rgba(190,165,80,0.10)') : 'rgba(40,60,110,0.10)';
       if (L.circuit[c] === hoverCircuit) ctx.fillStyle = g.blackout[hoverCircuit] > 0 || L.dead[hoverCircuit] ? 'rgba(120,120,120,0.18)' : 'rgba(255,70,50,0.22)';
       ctx.fillRect(this.sx(L.cx(c) * CS) + 1, this.sy(L.cy(c) * CS) + 1, CS * s - 2, CS * s - 2);
     }
