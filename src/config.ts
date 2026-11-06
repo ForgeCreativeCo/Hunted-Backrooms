@@ -10,6 +10,12 @@ export const CFG = {
 
   // Night
   NIGHT_SECONDS: 480,
+
+  // The descent: what happens between levels
+  EXIT_CLOSE: 45, // seconds from the first wanderer getting out until the exits close
+  FEAR_CARRY: 0.7, // fear eases this much on the way down (0.7 = 30% off)
+  DREAD_CARRY: 0.5, // the monster keeps half its dread, never less than it starts a level with
+  CHALK: 12, // chalk arrows each wanderer can draw in a whole run
   QUOTA: 120,
   STARS: [120, 180, 240],
   WANDERER_ENTRY: [0, 25, 50], // seconds after dusk each wanderer noclips in

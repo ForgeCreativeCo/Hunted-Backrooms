@@ -400,6 +400,9 @@ export class World3D {
   low = false;
   private poolSize = POOL;
   private exitGlows: { group: THREE.Group; light: THREE.PointLight }[] = [];
+  /** The exit signs' shared material, so they can stutter together while the exits die. */
+  private exitSignMat: THREE.MeshBasicMaterial | null = null;
+  private exitSignOff = false;
   private normalMaps: [THREE.MeshStandardMaterial, THREE.Texture][] = [];
   /** Render resolution as a fraction of the most we'd draw, lowered while frames run slow. */
   private resScale = 1;
@@ -838,6 +841,7 @@ export class World3D {
     const frameMat = new THREE.MeshStandardMaterial({ color: 0x3d3a34, roughness: 0.5, metalness: 0.6 });
     const barMat = new THREE.MeshStandardMaterial({ color: 0xb0b0aa, roughness: 0.25, metalness: 0.9 });
     const signMat = new THREE.MeshBasicMaterial({ map: T.exitSign(), color: new THREE.Color(2.2, 2.2, 2.2) });
+    this.exitSignMat = signMat;
     for (const e of L.exits) {
       const p = L.center(e.cell);
       const g = new THREE.Group();
@@ -1084,6 +1088,22 @@ export class World3D {
       const speed = target === 0 ? 5 : 2.4;
       v.cur += Math.max(-speed * dt, Math.min(speed * dt, target - v.cur));
       v.pivot.rotation.y = v.base + v.cur;
+    }
+
+    // The exit signs stutter once the exits are dying, worse as they near closing.
+    if (this.exitSignMat) {
+      let off = false;
+      if (g.exitsDying) {
+        const k = 1 - Math.max(0, g.exitT) / CFG.EXIT_CLOSE;
+        // Decided 12 times a second, so it stutters rather than strobes.
+        const roll = (((Math.sin(Math.floor(t * 12) * 12.9898) * 43758.5453) % 1) + 1) % 1;
+        off = g.over || roll < 0.08 + 0.45 * k;
+      }
+      if (off !== this.exitSignOff) {
+        this.exitSignOff = off;
+        this.exitSignMat.color.setScalar(off ? 0.12 : 2.2);
+        for (const { light } of this.exitGlows) light.intensity = off ? 0.15 : 2.2;
+      }
     }
 
     // Panels: on with their circuit, plus the odd tired flicker.

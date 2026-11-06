@@ -1,7 +1,7 @@
 import './style.css';
 import { Sound } from './audio';
 import { CFG } from './config';
-import { Game, GameEvents, levelName, PartyMember, rotateYaw } from './game';
+import { Game, GameEvents, levelName, MonsterCarry, PartyMember, rotateYaw } from './game';
 import { Lobby, StartMsg } from './lobby';
 import { MonsterAI } from './monsterAI';
 import { Net } from './net/client';
@@ -105,13 +105,13 @@ let S: Session;
  * A level of a run. `seed` is the run's seed; deeper levels pass their depth
  * and the party that came down from the level above.
  */
-function makeSession(seed: string, role: Role, slot: number, net: Net | null, players?: string[], depth = 1, party: PartyMember[] | null = null): Session {
+function makeSession(seed: string, role: Role, slot: number, net: Net | null, players?: string[], depth = 1, party: PartyMember[] | null = null, carry: MonsterCarry | null = null): Session {
   const events: GameEvents = {
     sound: (k, x, z, l, who) => S?.sound.play(k, x, z, l, who),
     caption: (text, w) => caption(text, w ? w.name : ''),
     toast,
   };
-  const game = new Game(seed, events, { players, depth, party: party ?? undefined });
+  const game = new Game(seed, events, { players, depth, party: party ?? undefined, carry: carry ?? undefined });
   const world = new World3D(game, huntCanvas, lowGfx);
   const sense = new SenseView(senseCanvas, game);
   const sound = new Sound(game, world.camera, world.scene);
@@ -236,17 +236,15 @@ function startSolo() {
 
 let soloReason = '';
 /**
- * Solo as a human, the level is over for you once you're out of it. Found an
- * exit: you go down, with whoever got out before you. Taken: the run is over.
+ * Solo as a human, taken: the run is over for you. (Found an exit: you watch
+ * the others try for the exits until they close, then go down with them.)
  */
-function soloOut(me: { caught: boolean }) {
+function soloTaken() {
   const g = S.game;
-  const r = g.finish('empty');
-  if (me.caught) g.result = { ...r, survivors: [] };
+  g.result = { ...g.finish('empty'), survivors: [] };
   S.spectating = true;
-  soloReason = me.caught ? 'It found you' : 'You found an exit';
-  if (me.caught) showCatch('TAKEN');
-  else showEnd();
+  soloReason = 'It found you';
+  showCatch('TAKEN');
 }
 
 /** Solo: the survivors of the level just ended arrive in the next one, and so does the monster. */
@@ -256,7 +254,7 @@ function goDeeper() {
   const { seed, role } = S;
   const players = r.survivors.filter((p) => p.player).map((p) => p.name);
   endSession();
-  S = makeSession(seed, role, role === 'human' ? 0 : -1, null, players, r.depth + 1, r.survivors);
+  S = makeSession(seed, role, role === 'human' ? 0 : -1, null, players, r.depth + 1, r.survivors, r.carry);
   if (role === 'human') S.ai = new MonsterAI(S.game);
   soloReason = '';
   beginPlay();
@@ -265,7 +263,7 @@ function goDeeper() {
 
 function startOnline(msg: StartMsg) {
   endSession();
-  S = makeSession(msg.seed, msg.role, msg.slot, lobby.net, msg.players, msg.depth, msg.party);
+  S = makeSession(msg.seed, msg.role, msg.slot, lobby.net, msg.players, msg.depth, msg.party, msg.carry);
   const net = lobby.net;
   S.off = net.on((m) => {
     const g = S.game;
@@ -626,6 +624,14 @@ function updateHud() {
   if (camShown) updateCam(g.t);
   const lvl = levelName(g.depth);
   $('sub').textContent = S.net ? `Online · ${lvl} · ${S.role === 'monster' ? 'you are the monster' : 'you are human'}` : `${lvl} · seed ${S.seed}`;
+  // Once someone is out, everyone sees how long the exits have left.
+  const dying = g.exitsDying && !g.over;
+  $('exitclock').hidden = !dying;
+  if (dying) {
+    const s = Math.ceil(g.exitT);
+    $('exitclock').textContent = `EXITS CLOSE IN ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+    $('exitclock').classList.toggle('last', s <= 10);
+  }
   const stars = CFG.STARS.filter((s) => g.score >= s).length;
   $('stars').textContent = S.role === 'monster' ? '★'.repeat(stars) + '☆'.repeat(3 - stars) : '';
   const me = self();
@@ -646,6 +652,10 @@ function updateHud() {
     $('tb-flash').classList.toggle('on', me.flash);
     $('tb-flash').classList.toggle('dim', me.battery <= 0);
     $('tb-crouch').classList.toggle('on', me.crouch);
+    $('chalkn').textContent = String(me.chalkLeft);
+    $('hk-chalk').classList.toggle('ready', me.chalkLeft > 0);
+    $('tb-chalk').textContent = `Chalk ${me.chalkLeft}`;
+    $('tb-chalk').classList.toggle('dim', me.chalkLeft <= 0);
     $('prompt').textContent = me.exhausted ? 'Out of breath' : '';
     return;
   }
@@ -707,18 +717,20 @@ function showEnd(reason = soloReason, next?: number) {
   const here = levelName(r.depth);
   const names = r.survivors.map((p) => p.name);
   const who = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
-  const tally = `${me ? 'The thing' : 'You'} harvested ${r.score} fear of ${r.quota} · caught ${r.caught} · escaped ${r.escaped}.`;
+  const tally = `${me ? 'The thing' : 'You'} harvested ${r.score} fear of ${r.quota} · caught ${r.caught} · escaped ${r.escaped}.` +
+    (r.depth > 1 ? ` ${r.carry.banked} fear in the whole run.` : '');
+  const why = reason ? `${reason}. ` : r.reason === 'dawn' ? 'Dawn came. ' : r.reason === 'closed' ? 'The exits closed. ' : '';
   if (goesOn) {
     const meDown = !!me && r.survivors.some((p) => p.player && p.name === me.name);
     $('endtitle').textContent = me ? (meDown ? 'Deeper' : 'Left behind') : 'They went deeper';
-    $('endsummary').textContent = `${reason ? `${reason}. ` : r.reason === 'dawn' ? 'Dawn came. ' : ''}` +
+    $('endsummary').textContent = why +
       `${who} got out of ${here}. ${tally}` +
       (online ? ` ${levelName(next!)} starts in a moment.` : '');
   } else {
     $('endtitle').textContent = me
       ? me.caught ? 'You were taken' : fed ? 'It fed' : 'You were lost'
       : fed ? 'Fed' : 'Hungry';
-    $('endsummary').textContent = `${reason ? `${reason}. ` : r.reason === 'dawn' ? 'Dawn came. ' : 'The level is empty. '}` +
+    $('endsummary').textContent = (why || 'The level is empty. ') +
       `Nobody got out. The descent ended on ${here}. ${tally}` +
       (online ? (fed ? ' The monster wins.' : ' The humans win.') : '');
   }
@@ -771,17 +783,20 @@ function frame(now: number) {
       }
       g.moveMonster(vx, vz, dt);
     }
-    if (!S.net) {
-      if (me && !S.placed && me.entered) {
-        // Look the way you came in facing.
-        S.world.look.yaw = Math.atan2(-Math.cos(me.heading), -Math.sin(me.heading));
-        S.placed = true;
-      }
-      S.ai?.update(dt);
-      g.update(dt);
-      if (me && (me.caught || me.escaped)) soloOut(me);
-      else if (g.over) showEnd();
+  }
+  if (mode === 'playing' && !S.net) {
+    // Solo: this page runs the level, and keeps running it while a human who
+    // found an exit watches the others try to reach one before they close.
+    if (me && !S.placed && me.entered) {
+      // Look the way you came in facing.
+      S.world.look.yaw = Math.atan2(-Math.cos(me.heading), -Math.sin(me.heading));
+      S.placed = true;
     }
+    S.ai?.update(dt);
+    g.update(dt);
+    if (me && me.caught && !S.spectating) soloTaken();
+    else if (me && me.escaped && !S.spectating) spectate('escaped');
+    else if (g.over) showEnd();
   } else if (mode === 'catching') {
     catchT -= dt;
     if (catchT <= 0) {

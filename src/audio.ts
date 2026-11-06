@@ -359,6 +359,14 @@ export class Sound {
       case 'step':
         this.noise(this.panner(x, z, 0.1), 0.09, 300 + Math.random() * 200, 1.2, 0.25 * loud);
         break;
+      case 'exitDying': {
+        // The exit sign's ballast failing: a sagging electrical buzz and a pop.
+        const p = this.panner(x, z, 2.4);
+        this.tone(p, 'sawtooth', 120, 55, 1.6, 0.35 * loud);
+        this.noise(p, 0.08, 3000, 1.5, 0.5 * loud);
+        setTimeout(() => this.noise(p, 0.05, 2200, 1.5, 0.35 * loud), 260);
+        break;
+      }
       case 'splash': {
         // A foot coming down in shallow water: a wet slap, then the drops falling back.
         const p = this.panner(x, z, 0.1);

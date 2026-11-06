@@ -7,7 +7,7 @@ import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { CFG } from '../src/config';
-import { Game, levelName, NightResult, PartyMember } from '../src/game';
+import { Game, levelName, MonsterCarry, NightResult, PartyMember } from '../src/game';
 import { ClientMsg, encodeSnapshot, LobbyPlayer, NetEvent, Role, RoomInfo, ServerMsg } from '../src/net/protocol';
 import { randomSeed } from '../src/rng';
 
@@ -41,7 +41,7 @@ interface Room {
   lastTick: number;
   wallsSent: number;
   /** The run under way: its seed, and the level it's on (or about to start). Null in the lobby. */
-  run: { seed: string; depth: number } | null;
+  run: { seed: string; depth: number; carry: MonsterCarry | null } | null;
   /** The pause between one level ending and the next starting. */
   nextTimer: ReturnType<typeof setTimeout> | null;
 }
@@ -214,7 +214,7 @@ const r2 = (v: number) => Math.round(v * 100) / 100;
 
 /** Start a run: its first level, with everyone in the room. */
 function startGame(room: Room) {
-  room.run = { seed: randomSeed(), depth: 1 };
+  room.run = { seed: randomSeed(), depth: 1, carry: null };
   startLevel(room, null);
 }
 
@@ -234,14 +234,14 @@ function startLevel(room: Room, party: PartyMember[] | null) {
     caption: (text, who) => room.events.push(['c', text, who ? who.id : -1]),
     toast: (text) => room.events.push(['t', text]),
     pulse: (p, who) => room.events.push(['p', r2(p.x), r2(p.z), r2(p.maxR), Math.round(p.fear), who.id]),
-  }, { players, depth: run.depth, party: party ?? undefined });
+  }, { players, depth: run.depth, party: party ?? undefined, carry: run.carry ?? undefined });
   room.game = game;
   room.wallsSent = 0;
   for (const c of room.clients) {
     // A human's slot is where their name is in this level; not there = lost above.
     c.slot = c.role === 'human' ? game.wanderers.findIndex((w) => w.player && w.name === c.name) : -1;
     c.lastPosAt = 0;
-    send(c, { t: 'start', seed: run.seed, role: c.role!, slot: c.slot, players, depth: run.depth, party });
+    send(c, { t: 'start', seed: run.seed, role: c.role!, slot: c.slot, players, depth: run.depth, party, carry: run.carry });
   }
   room.lastTick = performance.now();
   room.timer = setInterval(() => tick(room), 1000 / TICK_HZ);
@@ -275,10 +275,11 @@ function endLevel(room: Room) {
   const next = run.depth + 1;
   for (const c of room.clients) send(c, { t: 'end', result: g.result, next });
   console.log(`[${room.name}] ${levelName(run.depth)} over: ${g.result.survivors.length} went deeper`);
-  const party = g.result.survivors;
+  const party = g.result.survivors, carry = g.result.carry;
   room.nextTimer = setTimeout(() => {
     if (room.run !== run) return; // the run was abandoned meanwhile
     run.depth = next;
+    run.carry = carry;
     startLevel(room, party);
   }, BETWEEN_LEVELS_MS);
 }
@@ -304,8 +305,8 @@ function endGame(room: Room, reason?: string) {
 }
 
 /** A result to show when a run is abandoned between levels, with no level running. */
-function lastResult(run: { depth: number }): NightResult {
-  return { score: 0, quota: CFG.QUOTA, stars: 0, reason: 'empty', caught: 0, escaped: 0, depth: run.depth, survivors: [] };
+function lastResult(run: { depth: number; carry: MonsterCarry | null }): NightResult {
+  return { score: 0, quota: CFG.QUOTA, stars: 0, reason: 'empty', caught: 0, escaped: 0, depth: run.depth, survivors: [], carry: run.carry ?? { dread: 0, banked: 0 } };
 }
 
 function gameMsg(c: Client, msg: ClientMsg) {

@@ -40,6 +40,7 @@
         <div id="roster"></div>
       </div>
       <div id="seen">◉ SEEN</div>
+      <div id="exitclock" hidden></div>
       <div id="toast"></div>
       <div id="crosshair"></div>
       <div id="prompt"></div>
@@ -61,7 +62,7 @@
           <div class="ab ready"><kbd>Shift</kbd>Sprint</div>
           <div class="ab ready"><kbd>C</kbd>Crouch</div>
           <div class="ab ready" id="hk-flash"><kbd>F</kbd>Flashlight</div>
-          <div class="ab ready"><kbd>E</kbd>Draw arrow</div>
+          <div class="ab ready" id="hk-chalk"><kbd>E</kbd>Draw arrow <i id="chalkn"></i></div>
         </div>
       </div>
       <div id="spectate" hidden></div>
@@ -74,7 +75,7 @@
       <div id="tbtns">
         <div class="tgroup human-only">
           <button class="tb" data-key="KeyC" id="tb-crouch">Crouch</button>
-          <button class="tb" data-key="KeyE">Chalk</button>
+          <button class="tb" data-key="KeyE" id="tb-chalk">Chalk</button>
           <button class="tb big" data-key="KeyF" id="tb-flash">Light</button>
         </div>
         <div class="tgroup monster-only">

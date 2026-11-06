@@ -6,7 +6,7 @@ export type WState = 'explore' | 'alert' | 'flee' | 'hide' | 'escape' | 'panic' 
 
 export interface GameEvents {
   sound(
-    kind: 'step' | 'splash' | 'scream' | 'blackout' | 'lightsOn' | 'shift' | 'chalk' | 'gasp' | 'catch' | 'roar' | 'escape' | 'breath'
+    kind: 'step' | 'splash' | 'exitDying' | 'scream' | 'blackout' | 'lightsOn' | 'shift' | 'chalk' | 'gasp' | 'catch' | 'roar' | 'escape' | 'breath'
       | 'door' | 'doorShut' | 'phone',
     x: number, z: number, loud: number, who?: Wanderer,
   ): void;
@@ -26,14 +26,25 @@ export interface GameOptions {
    * they are in this level: nobody new arrives below the first.
    */
   party?: PartyMember[];
+  /** What the monster brings down from the level above. */
+  carry?: MonsterCarry;
 }
 
-/** Someone who made it out of a level and carries on down. */
+/** Someone who made it out of a level and carries on down, with what they had left. */
 export interface PartyMember {
   name: string;
   kind: Kind;
   voice: number;
   player: boolean;
+  fear: number;
+  battery: number;
+  chalk: number;
+}
+
+/** The monster's dread at the end of the level above, and all the fear it has harvested so far. */
+export interface MonsterCarry {
+  dread: number;
+  banked: number;
 }
 
 /**
@@ -125,6 +136,8 @@ export class Wanderer {
   crouch = false;
   flash = false;
   battery = 100;
+  /** Chalk arrows left for the rest of the run. */
+  chalkLeft = CFG.CHALK;
 
   constructor(public id: number, public kind: Kind, public name: string, public enterAt: number, cells: number) {
     this.visits = new Float32Array(cells);
@@ -152,10 +165,12 @@ export interface NightResult {
   stars: number;
   caught: number;
   escaped: number;
-  reason: 'dawn' | 'empty';
+  reason: 'dawn' | 'empty' | 'closed';
   /** The level this was, and who got out of it to carry on down. Nobody: the run is over. */
   depth: number;
   survivors: PartyMember[];
+  /** What the monster takes down with it. `banked` includes this level's score. */
+  carry: MonsterCarry;
 }
 
 export class Game {
@@ -170,6 +185,10 @@ export class Game {
   blackout: Float32Array;
   pulses: Pulse[] = [];
   result: NightResult | null = null;
+  /** Seconds until the exits close, once the first wanderer is out; -1 before that. */
+  exitT = -1;
+  /** Fear the monster harvested on the levels above this one. */
+  readonly banked: number;
   private distMonster: Int32Array = new Int32Array(0);
   private distKey = '';
   private decayT = 0;
@@ -182,6 +201,9 @@ export class Game {
   /** `seed` is the run's seed; this level is built from it and the depth. */
   constructor(public seed: string, public events: GameEvents, opts: GameOptions = {}) {
     this.depth = Math.max(1, opts.depth ?? 1);
+    this.banked = opts.carry?.banked ?? 0;
+    // The monster arrives already strong, but has to feed again.
+    if (opts.carry) this.dread = Math.max(CFG.DREAD_START, opts.carry.dread * CFG.DREAD_CARRY);
     const ls = levelSeed(seed, this.depth);
     this.level = new Level(ls);
     this.rng = new RNG(ls + ':night');
@@ -200,6 +222,10 @@ export class Game {
         const w = new Wanderer(i, p.kind, p.name, 0, this.level.cells);
         w.voice = p.voice;
         w.player = p.player;
+        // You arrive already shaken, with whatever light and chalk you had left.
+        w.fear = p.fear * CFG.FEAR_CARRY;
+        w.battery = p.battery;
+        w.chalkLeft = p.chalk;
         this.wanderers.push(w);
       });
       return;
@@ -307,19 +333,39 @@ export class Game {
     for (const p of this.pulses) p.age += dt;
     this.pulses = this.pulses.filter((p) => p.age < p.life);
 
-    // End of night.
+    // The first one out starts the exits dying; when they close, the level is over.
+    if (this.exitT < 0 && this.wanderers.some((w) => w.escaped)) {
+      this.exitT = CFG.EXIT_CLOSE;
+      for (const e of L.exits) {
+        const p = L.center(e.cell);
+        this.events.sound('exitDying', p.x, p.z, 1);
+      }
+      this.events.toast(`The exits are dying. ${CFG.EXIT_CLOSE} seconds.`);
+    } else if (this.exitT > 0) {
+      const before = this.exitT;
+      this.exitT = Math.max(0, this.exitT - dt);
+      if (before > 10 && this.exitT <= 10) this.events.toast('Ten seconds.');
+    }
+
+    // End of the level.
     const allIn = this.wanderers.every((w) => w.entered);
     const anyLeft = this.wanderers.some((w) => w.active);
-    if (this.t >= CFG.NIGHT_SECONDS || (allIn && !anyLeft)) this.finish(this.t >= CFG.NIGHT_SECONDS ? 'dawn' : 'empty');
+    if (allIn && !anyLeft) this.finish('empty');
+    else if (this.exitT === 0) this.finish('closed');
+    else if (this.t >= CFG.NIGHT_SECONDS) this.finish('dawn');
   }
+
+  /** Are the exits closing? (Then they stutter, and the HUD counts down.) */
+  get exitsDying() { return this.exitT >= 0; }
 
   /**
    * End this level now. Whoever already found an exit carries on down; anyone
    * still wandering it is lost with it.
    */
-  finish(reason: 'dawn' | 'empty') {
+  finish(reason: 'dawn' | 'empty' | 'closed') {
     if (this.result) return this.result;
     const out = this.wanderers.filter((w) => w.escaped);
+    this.exitT = 0;
     this.result = {
       score: this.score,
       quota: CFG.QUOTA,
@@ -328,7 +374,11 @@ export class Game {
       escaped: out.length,
       reason,
       depth: this.depth,
-      survivors: out.map((w) => ({ name: w.name, kind: w.kind, voice: w.voice, player: w.player })),
+      survivors: out.map((w) => ({
+        name: w.name, kind: w.kind, voice: w.voice, player: w.player,
+        fear: Math.round(w.fear), battery: Math.round(w.battery), chalk: w.chalkLeft,
+      })),
+      carry: { dread: Math.round(this.dread), banked: this.banked + this.score },
     };
     return this.result;
   }
@@ -530,6 +580,7 @@ export class Game {
   drawChalk(w: Wanderer): string | null {
     const L = this.level;
     const c = L.cellAt(w.x, w.z);
+    if (w.chalkLeft <= 0) return 'Out of chalk';
     const dirs = L.openDirs(c);
     if (!dirs.length) return 'Nowhere to point';
     const fx = Math.cos(w.heading), fz = Math.sin(w.heading);
@@ -539,6 +590,7 @@ export class Game {
       if (dot > best) { best = dot; dir = d; }
     }
     this.chalk.set(c, { dir, by: w.id });
+    w.chalkLeft--;
     this.events.sound('chalk', w.x, w.z, 0.5);
     return null;
   }
@@ -786,11 +838,12 @@ export class Game {
       if (mark) w.drawn.set(w.cell, mark.dir);
       else w.drawn.delete(w.cell);
     }
-    if (w.fear > 75) return; // too scared to stop and draw
+    if (w.fear > 75 || w.chalkLeft <= 0) return; // too scared to stop and draw, or nothing left to draw with
     const next = this.chooseExplore(w);
     const dir = L.dirBetween(w.cell, next);
     if (dir < 0) return;
     this.chalk.set(w.cell, { dir, by: w.id });
+    w.chalkLeft--;
     w.drawn.set(w.cell, dir);
     w.pendingNext = next;
     this.setState(w, 'chalk', 0.9);

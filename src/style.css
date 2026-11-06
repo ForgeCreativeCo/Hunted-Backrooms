@@ -267,3 +267,13 @@ body.touch.footage #hud { inset: calc(4vh + 40px) calc(4vw + 4px) calc(4vh + 20p
   .cols { margin: 8px 0; gap: 20px; }
   .cols ul { line-height: 1.6; font-size: 12px; }
 }
+
+/* The exits dying: a countdown everyone sees, monster and humans alike. */
+#exitclock {
+  position: absolute; top: 84px; left: 50%; transform: translateX(-50%);
+  color: var(--accent); font-weight: 700; letter-spacing: 0.2em; font-size: 15px;
+  text-shadow: 0 0 8px #000; white-space: nowrap;
+}
+#exitclock[hidden] { display: none; }
+#exitclock.last { animation: exitpulse 1s steps(2, end) infinite; }
+@keyframes exitpulse { 50% { opacity: 0.35; } }

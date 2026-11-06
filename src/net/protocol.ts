@@ -1,4 +1,4 @@
-import { Game, NightResult, PartyMember, WState } from '../game';
+import { Game, MonsterCarry, NightResult, PartyMember, WState } from '../game';
 
 // Messages between clients and the game server. The server runs the real Game;
 // each client keeps a mirror Game (same seed, same roster) and copies snapshots into it.
@@ -42,7 +42,7 @@ export type ServerMsg =
   | { t: 'lobby'; room: number; name: string; you: string; players: LobbyPlayer[] }
   | { t: 'error'; msg: string }
   // A level starting: the run's seed, how deep, and who is in it. slot -1 as a human: you were lost above, and watch.
-  | { t: 'start'; seed: string; role: Role; slot: number; players: string[]; depth: number; party: PartyMember[] | null }
+  | { t: 'start'; seed: string; role: Role; slot: number; players: string[]; depth: number; party: PartyMember[] | null; carry: MonsterCarry | null }
   | { t: 'snap'; s: Snapshot; ev: NetEvent[] }
   | { t: 'correct'; x: number; z: number }
   | { t: 'actErr'; msg: string }
@@ -65,7 +65,8 @@ export interface Snapshot {
   score: number;
   black: number[];
   m: number[]; // x, z, yaw, pitch, seepT, seepCD, seen, moving
-  w: number[][]; // per wanderer: x, z, heading, pitch, state, fear, stamina, battery, flags
+  w: number[][]; // per wanderer: x, z, heading, pitch, state, fear, stamina, battery, flags, chalk left
+  x: number; // seconds until the exits close, -1 before the first one out
   chalk: number[]; // cell, dir pairs
   wv: number; // wall version
   walls?: string; // '0'/'1' per edge, only when the version changed
@@ -87,8 +88,10 @@ export function encodeSnapshot(g: Game, sentWallVersion: number): Snapshot {
       r2(w.x), r2(w.z), r2(w.heading), r2(w.pitch), STATES.indexOf(w.state), r2(w.fear), r2(w.stamina), r2(w.battery),
       (w.entered ? 1 : 0) | (w.caught ? 2 : 0) | (w.escaped ? 4 : 0) | (w.exhausted ? 8 : 0)
         | (w.flash ? 16 : 0) | (w.crouch ? 32 : 0) | (w.sees ? 64 : 0) | (w.player ? 128 : 0) | (w.moving ? 256 : 0),
+      w.chalkLeft,
     ]),
     chalk: [...g.chalk].flatMap(([cell, mark]) => [cell, mark.dir]),
+    x: r2(g.exitT),
     wv: L.version,
     doors: L.doors.map((d) => (d.open === 0 ? '0' : d.open > 0 ? '1' : '2')).join(''),
   };
@@ -104,6 +107,7 @@ export function applySnapshot(g: Game, s: Snapshot, self: { role: Role; slot: nu
   g.t = s.t;
   g.dread = s.dread;
   g.score = s.score;
+  g.exitT = s.x;
   s.black.forEach((v, i) => (g.blackout[i] = v));
   const m = g.monster;
   if (self.role !== 'monster') {
@@ -138,6 +142,7 @@ export function applySnapshot(g: Game, s: Snapshot, self: { role: Role; slot: nu
     w.sees = !!(f & 64);
     w.player = !!(f & 128);
     if (!mine) w.moving = !!(f & 256);
+    if (a[9] !== undefined) w.chalkLeft = a[9];
   });
   g.chalk.clear();
   for (let i = 0; i < s.chalk.length; i += 2) g.chalk.set(s.chalk[i], { dir: s.chalk[i + 1], by: -1 });
