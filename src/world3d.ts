@@ -15,7 +15,6 @@ import * as T from './textures';
 
 const PANEL_ON = new THREE.Color(2.4, 2.35, 2.1);
 const PANEL_OFF = new THREE.Color(0.03, 0.03, 0.035);
-const FOG_LIT = new THREE.Color(0x3a321a);
 const FOG_DARK = new THREE.Color(0x040507);
 const POOL = 8; // real point lights, moved to the nearest visible fixtures each frame
 const POOL_LOW = 4; // on low graphics: every light costs every lit pixel, and tablets feel it
@@ -464,6 +463,8 @@ export class World3D {
   private waterTime = { value: 0 };
   /** 0..1, eased: how far into the Poolrooms the view is. */
   private poolAir = 0;
+  /** The air's colour where the lights are on, from the level's description. */
+  private fogLit: THREE.Color;
 
   constructor(private game: Game, canvas: HTMLCanvasElement, low = false) {
     const L = game.level;
@@ -477,11 +478,13 @@ export class World3D {
     this.camera = new THREE.PerspectiveCamera(72, window.innerWidth / window.innerHeight, 0.05, 80);
     this.camera.rotation.order = 'YXZ';
     this.scene.add(this.camera);
-    this.scene.fog = new THREE.FogExp2(FOG_LIT.getHex(), 0.042);
-    this.scene.background = FOG_LIT.clone();
+    // The level's own air and light: yellow murk in Level 0, pale and clear in the Poolrooms.
+    this.fogLit = new THREE.Color(game.level.def.look.fog);
+    this.scene.fog = new THREE.FogExp2(this.fogLit.getHex(), 0.042);
+    this.scene.background = this.fogLit.clone();
 
     // Ambient bounce off yellow walls and carpet. Gated per surface by circuit.
-    this.scene.add(new THREE.HemisphereLight(0xffeab0, 0x9a8048, 0.6));
+    this.scene.add(new THREE.HemisphereLight(game.level.def.look.ambient, 0x9a8048, 0.6));
 
     const CS = L.CS, H = CFG.WALL_H;
     this.cellTex = new THREE.DataTexture(new Uint8Array(L.W * L.H * 4).fill(255), L.W, L.H);
@@ -1170,7 +1173,7 @@ export class World3D {
     this.poolAir += (inPool - this.poolAir) * Math.min(1, dt * 1.5);
     this.waterTime.value = t;
     const fog = this.scene.fog as THREE.FogExp2;
-    fog.color.copy(FOG_DARK).lerp(this.col.copy(FOG_LIT).lerp(FOG_POOLROOMS, this.poolAir), here);
+    fog.color.copy(FOG_DARK).lerp(this.col.copy(this.fogLit).lerp(FOG_POOLROOMS, this.poolAir), here);
     fog.density = 0.042 + (1 - here) * 0.03 - this.nightVision * 0.025 - this.poolAir * here * 0.014;
     (this.scene.background as THREE.Color).copy(fog.color);
 

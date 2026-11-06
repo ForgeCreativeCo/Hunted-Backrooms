@@ -1,5 +1,6 @@
 import { CFG } from './config';
 import { RNG } from './rng';
+import { LEVEL0, type LevelDef } from './levels';
 
 // Directions: 0 = north (-z), 1 = east (+x), 2 = south (+z), 3 = west (-x).
 export const DX = [0, 1, 0, -1];
@@ -145,7 +146,8 @@ export class Level {
   /** Bumped whenever a wall changes, so cached paths know to re-plan. */
   version = 0;
 
-  constructor(readonly seed: string) {
+  /** Built from its seed, to the description of the level it is (Level 0 unless told otherwise). */
+  constructor(readonly seed: string, readonly def: LevelDef = LEVEL0) {
     this.walls = new Uint8Array(this.edgeCount).fill(1);
     this.circuit = new Int16Array(this.cells);
     this.panel = new Uint8Array(this.cells);
@@ -411,7 +413,7 @@ export class Level {
 
     // 3b. The Manila Room: one ordinary room, walled in again with as few ways in
     // as still keep the level connected, and red where everything else is yellow.
-    if (carved.length) {
+    if (carved.length && this.def.gen.manila) {
       const r = zr.pick(carved);
       const boundary: number[] = [];
       for (let y = r.y; y < r.y + r.h; y++) {
@@ -437,7 +439,7 @@ export class Level {
 
     // 3c. The Street: one long, tall hall with a road down the middle and houses
     // along both sides. Walled in again, with the road leading in at either end.
-    this.placeStreet(new RNG(this.seed + ':street'));
+    if (this.def.gen.street) this.placeStreet(new RNG(this.seed + ':street'));
 
     // 4. Pillars at grid corners where all four meeting edges are open (never in the road).
     for (let vy = 1; vy < H; vy++) {
@@ -524,22 +526,32 @@ export class Level {
     this.dead = new Uint8Array(this.circuitCount);
     const circuits = zr.shuffle(Array.from({ length: this.circuitCount }, (_, i) => i))
       .filter((i) => i !== this.circuit[spawn]);
-    const kinds = [Zone.Dark, Zone.Pitfalls, Zone.Furnished, Zone.Furnished, Zone.Furnished, Zone.Pool];
+    // Which kinds of region this level has, from its description.
+    const gen = this.def.gen;
+    const allPool = gen.pool === 'all';
+    const kinds: Zone[] = [];
+    for (let k = 0; k < gen.dark; k++) kinds.push(Zone.Dark);
+    if (gen.pitfalls) kinds.push(Zone.Pitfalls);
+    for (let k = 0; k < gen.furnished; k++) kinds.push(Zone.Furnished);
+    if (gen.pool === 'region') kinds.push(Zone.Pool);
+    const make = (c: number, z: Zone) => {
+      if (this.zone[c] === Zone.Manila || this.zone[c] === Zone.Street) return;
+      this.zone[c] = z;
+      // The Poolrooms have no light fittings: the light is just there. Their
+      // rooms run tall, never cramped.
+      if (z === Zone.Pool) {
+        this.panel[c] = 0;
+        this.ceil[c] = Math.max(this.ceil[c], 3.4);
+      }
+    };
     kinds.forEach((z, j) => {
       const i = circuits[j];
       if (i === undefined) return;
       if (z === Zone.Dark) this.dead[i] = 1;
-      for (const c of this.circuitCells[i]) {
-        if (this.zone[c] === Zone.Manila || this.zone[c] === Zone.Street) continue;
-        this.zone[c] = z;
-        // The Poolrooms have no light fittings: the light is just there. Their
-        // rooms run tall, never cramped.
-        if (z === Zone.Pool) {
-          this.panel[c] = 0;
-          this.ceil[c] = Math.max(this.ceil[c], 3.4);
-        }
-      }
+      // Where the whole level is the Poolrooms, a dead circuit is still tile and water, just unlit.
+      for (const c of this.circuitCells[i]) make(c, allPool && z === Zone.Dark ? Zone.Pool : z);
     });
+    if (allPool) for (let c = 0; c < this.cells; c++) if (this.zone[c] === Zone.Bare) make(c, Zone.Pool);
   }
 
   /**

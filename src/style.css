@@ -59,7 +59,8 @@ kbd {
 #toast {
   position: absolute; top: 52px; left: 50%; transform: translateX(-50%);
   background: var(--panel); padding: 6px 14px; border-radius: 4px;
-  font-size: 13px; opacity: 0; transition: opacity 0.3s; white-space: nowrap;
+  font-size: 13px; opacity: 0; transition: opacity 0.3s;
+  width: max-content; max-width: min(560px, 90vw); text-align: center;
 }
 #toast.on { opacity: 1; }
 

@@ -1,5 +1,6 @@
 import { CFG, Kind } from './config';
 import { Box, DX, DY, Door, Level, OPP } from './level';
+import { levelFor, type LevelDef } from './levels';
 import { RNG } from './rng';
 
 export type WState = 'explore' | 'alert' | 'flee' | 'hide' | 'escape' | 'panic' | 'chalk' | 'confused';
@@ -53,11 +54,6 @@ export interface MonsterCarry {
  */
 export function levelSeed(seed: string, depth: number) {
   return depth <= 1 ? seed : `${seed}:L${depth}`;
-}
-
-/** The level's name as the lore numbers it: the first level is Level 0. */
-export function levelName(depth: number) {
-  return `Level ${depth - 1}`;
 }
 
 export interface Pulse {
@@ -197,6 +193,8 @@ export class Game {
 
   /** How deep in the run this level is: 1 is the first. */
   readonly depth: number;
+  /** Which level of the Backrooms this is. */
+  readonly def: LevelDef;
 
   /** `seed` is the run's seed; this level is built from it and the depth. */
   constructor(public seed: string, public events: GameEvents, opts: GameOptions = {}) {
@@ -205,7 +203,8 @@ export class Game {
     // The monster arrives already strong, but has to feed again.
     if (opts.carry) this.dread = Math.max(CFG.DREAD_START, opts.carry.dread * CFG.DREAD_CARRY);
     const ls = levelSeed(seed, this.depth);
-    this.level = new Level(ls);
+    this.def = levelFor(seed, this.depth);
+    this.level = new Level(ls, this.def);
     this.rng = new RNG(ls + ':night');
     this.blackout = new Float32Array(this.level.circuitCount);
     this.phoneT = this.rng.range(45, 90);

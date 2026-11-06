@@ -7,7 +7,8 @@ import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { CFG } from '../src/config';
-import { Game, levelName, MonsterCarry, NightResult, PartyMember } from '../src/game';
+import { Game, MonsterCarry, NightResult, PartyMember } from '../src/game';
+import { placeName } from '../src/levels';
 import { ClientMsg, encodeSnapshot, LobbyPlayer, NetEvent, Role, RoomInfo, ServerMsg } from '../src/net/protocol';
 import { randomSeed } from '../src/rng';
 
@@ -246,7 +247,7 @@ function startLevel(room: Room, party: PartyMember[] | null) {
   room.lastTick = performance.now();
   room.timer = setInterval(() => tick(room), 1000 / TICK_HZ);
   broadcastRooms();
-  console.log(`[${room.name}] ${levelName(run.depth)} started: seed ${run.seed}, ${game.wanderers.length} wanderer(s), ${players.length} of them players`);
+  console.log(`[${room.name}] ${placeName(run.seed, run.depth)} started: seed ${run.seed}, ${game.wanderers.length} wanderer(s), ${players.length} of them players`);
 }
 
 function tick(room: Room) {
@@ -274,7 +275,7 @@ function endLevel(room: Room) {
   room.game = null;
   const next = run.depth + 1;
   for (const c of room.clients) send(c, { t: 'end', result: g.result, next });
-  console.log(`[${room.name}] ${levelName(run.depth)} over: ${g.result.survivors.length} went deeper`);
+  console.log(`[${room.name}] ${placeName(run.seed, run.depth)} over: ${g.result.survivors.length} went deeper`);
   const party = g.result.survivors, carry = g.result.carry;
   room.nextTimer = setTimeout(() => {
     if (room.run !== run) return; // the run was abandoned meanwhile
@@ -301,7 +302,7 @@ function endGame(room: Room, reason?: string) {
     send(c, { t: 'end', result, reason });
   }
   sendLobby(room);
-  console.log(`[${room.name}] run ended at ${levelName(run.depth)}: ${result.score}/${result.quota} fear${reason ? ` (${reason})` : ''}`);
+  console.log(`[${room.name}] run ended at ${placeName(run.seed, run.depth)}: ${result.score}/${result.quota} fear${reason ? ` (${reason})` : ''}`);
 }
 
 /** A result to show when a run is abandoned between levels, with no level running. */

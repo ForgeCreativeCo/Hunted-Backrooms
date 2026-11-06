@@ -26,6 +26,8 @@ export class Sound {
   listener = new THREE.AudioListener();
   ctx: AudioContext;
   private noiseBuf: AudioBuffer;
+  /** How loud the lights hum on this level (the Poolrooms are nearly silent). */
+  private humVol = 1;
   private hums: { gain: GainNode; audio: THREE.PositionalAudio }[] = [];
   private master: GainNode;
   private clips = new Map<Clip, AudioBuffer>();
@@ -62,9 +64,10 @@ export class Sound {
 
     // One hum source per light circuit: you always hear where the lights are.
     const L = game.level;
+    this.humVol = L.def.look.hum;
     for (let i = 0; i < L.circuitCount; i++) {
       const gain = this.ctx.createGain();
-      gain.gain.value = 0.22;
+      gain.gain.value = 0.22 * this.humVol;
       const o1 = this.ctx.createOscillator();
       o1.type = 'sawtooth';
       o1.frequency.value = 60 + (i % 3) * 0.4;
@@ -306,7 +309,7 @@ export class Sound {
 
   setCircuit(i: number, level: number) {
     const g = this.hums[i]?.gain;
-    if (g) g.gain.setTargetAtTime(0.22 * level, this.ctx.currentTime, 0.03);
+    if (g) g.gain.setTargetAtTime(0.22 * this.humVol * level, this.ctx.currentTime, 0.03);
   }
 
   private panner(x: number, z: number, y = 1) {

@@ -1,7 +1,8 @@
 import './style.css';
 import { Sound } from './audio';
 import { CFG } from './config';
-import { Game, GameEvents, levelName, MonsterCarry, PartyMember, rotateYaw } from './game';
+import { Game, GameEvents, MonsterCarry, PartyMember, rotateYaw } from './game';
+import { levelFor } from './levels';
 import { Lobby, StartMsg } from './lobby';
 import { MonsterAI } from './monsterAI';
 import { Net } from './net/client';
@@ -20,12 +21,12 @@ const urlSeed = params.get('seed');
 // ---- HUD helpers ----
 
 let toastTimer = 0;
-function toast(text: string) {
+function toast(text: string, ms = 2200) {
   const el = $('toast');
   el.textContent = text;
   el.classList.add('on');
   clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => el.classList.remove('on'), 2200);
+  toastTimer = window.setTimeout(() => el.classList.remove('on'), ms);
 }
 
 function caption(text: string, who: string) {
@@ -232,6 +233,7 @@ function startSolo() {
     S.ai = new MonsterAI(S.game);
   }
   beginPlay();
+  arrive();
 }
 
 let soloReason = '';
@@ -247,6 +249,12 @@ function soloTaken() {
   showCatch('TAKEN');
 }
 
+/** Arriving in a level: its name, and the line players remember it by. */
+function arrive() {
+  const d = S.game.def;
+  toast(`${d.name}. ${d.signature}`, 5000);
+}
+
 /** Solo: the survivors of the level just ended arrive in the next one, and so does the monster. */
 function goDeeper() {
   const r = S.game.result;
@@ -258,7 +266,7 @@ function goDeeper() {
   if (role === 'human') S.ai = new MonsterAI(S.game);
   soloReason = '';
   beginPlay();
-  toast(`${levelName(S.game.depth)}`);
+  arrive();
 }
 
 function startOnline(msg: StartMsg) {
@@ -313,9 +321,9 @@ function startOnline(msg: StartMsg) {
     S.spectating = true;
     setRoleClass('spectator');
     $('spectate').hidden = false;
-    $('spectate').textContent = `You were lost on the level above. Watching the others on ${levelName(S.game.depth)}.`;
+    $('spectate').textContent = `You were lost on the level above. Watching the others in ${S.game.def.name}.`;
     setView('sense');
-  } else toast(levelName(S.game.depth));
+  } else arrive();
 }
 
 /** Something the server's game raised this tick. */
@@ -622,7 +630,7 @@ function updateHud() {
   const g = S.game;
   $('clock').textContent = clockText(g.t);
   if (camShown) updateCam(g.t);
-  const lvl = levelName(g.depth);
+  const lvl = `${g.def.name} · depth ${g.depth}`;
   $('sub').textContent = S.net ? `Online · ${lvl} · ${S.role === 'monster' ? 'you are the monster' : 'you are human'}` : `${lvl} · seed ${S.seed}`;
   // Once someone is out, everyone sees how long the exits have left.
   const dying = g.exitsDying && !g.over;
@@ -714,7 +722,7 @@ function showEnd(reason = soloReason, next?: number) {
   const me = self();
   const online = !!S.net;
   const goesOn = online ? next !== undefined : r.survivors.length > 0;
-  const here = levelName(r.depth);
+  const here = levelFor(S.game.seed, r.depth).name;
   const names = r.survivors.map((p) => p.name);
   const who = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
   const tally = `${me ? 'The thing' : 'You'} harvested ${r.score} fear of ${r.quota} · caught ${r.caught} · escaped ${r.escaped}.` +
@@ -725,13 +733,13 @@ function showEnd(reason = soloReason, next?: number) {
     $('endtitle').textContent = me ? (meDown ? 'Deeper' : 'Left behind') : 'They went deeper';
     $('endsummary').textContent = why +
       `${who} got out of ${here}. ${tally}` +
-      (online ? ` ${levelName(next!)} starts in a moment.` : '');
+      (online ? ` Next: ${levelFor(S.game.seed, next!).name}, in a moment.` : '');
   } else {
     $('endtitle').textContent = me
       ? me.caught ? 'You were taken' : fed ? 'It fed' : 'You were lost'
       : fed ? 'Fed' : 'Hungry';
     $('endsummary').textContent = (why || 'The level is empty. ') +
-      `Nobody got out. The descent ended on ${here}. ${tally}` +
+      `Nobody got out. The descent ended at depth ${r.depth}, in ${here}. ${tally}` +
       (online ? (fed ? ' The monster wins.' : ' The humans win.') : '');
   }
   $('endstars').textContent = me || goesOn ? '' : '★'.repeat(r.stars) + '☆'.repeat(3 - r.stars);
