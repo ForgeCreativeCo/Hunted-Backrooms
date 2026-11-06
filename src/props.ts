@@ -6,7 +6,7 @@ import type { Prop } from './level';
 // merged geometry per material, so hundreds of props cost a handful of draw calls.
 
 export type PropMat = 'wood' | 'laminate' | 'metal' | 'fabric' | 'plastic' | 'mattress' | 'skin' | 'paper' | 'dark' | 'screen' | 'shade'
-  | 'sidingBlue' | 'sidingGrey' | 'sidingRed' | 'white' | 'roof' | 'glass' | 'red';
+  | 'sidingBlue' | 'sidingGrey' | 'sidingRed' | 'white' | 'roof' | 'glass' | 'red' | 'cardboard';
 
 const SIDING: PropMat[] = ['sidingBlue', 'sidingGrey', 'sidingRed'];
 
@@ -254,6 +254,49 @@ function stopSign(b: Builder) {
   b.add('red', new THREE.CylinderGeometry(0.3, 0.3, 0.02, 8), 0, 2.3, 0.05, Math.PI / 2, Math.PI / 8, 0);
 }
 
+function crate(b: Builder) {
+  // An open wooden crate, its lid leaning against the wall behind it.
+  b.box('wood', 0.6, 0.04, 0.55, 0, 0.02, 0);
+  for (const s of [-1, 1]) {
+    b.box('wood', 0.6, 0.42, 0.03, 0, 0.25, s * 0.26);
+    b.box('wood', 0.03, 0.42, 0.55, s * 0.285, 0.25, 0);
+    // Corner battens.
+    b.box('wood', 0.05, 0.44, 0.05, s * 0.29, 0.24, 0.265);
+    b.box('wood', 0.05, 0.44, 0.05, s * 0.29, 0.24, -0.265);
+  }
+  // Straw packing, and a stencilled stripe on the front.
+  b.box('cardboard', 0.54, 0.02, 0.49, 0, 0.36, 0);
+  b.box('dark', 0.34, 0.06, 0.005, 0, 0.32, 0.278);
+  b.box('wood', 0.62, 0.56, 0.025, 0, 0.6, -0.34, -0.14);
+}
+
+function cardboardBox(b: Builder, w: number, h: number, d: number, x: number, y: number, z: number, ry: number) {
+  b.box('cardboard', w, h, d, x, y + h / 2, z, 0, ry);
+  // Packing tape across the top.
+  b.box('plastic', w + 0.004, 0.004, 0.06, x, y + h + 0.002, z, 0, ry);
+}
+
+function pallet(b: Builder, layers: number) {
+  // A wooden pallet: three runners and a slatted deck, with boxes stacked on it.
+  for (const z of [-0.45, 0, 0.45]) b.box('wood', 1.2, 0.1, 0.1, 0, 0.05, z);
+  for (let i = 0; i < 7; i++) b.box('wood', 0.12, 0.022, 1.0, -0.54 + i * 0.18, 0.111, 0);
+  for (let l = 0; l < layers; l++) {
+    for (let i = 0; i < 4; i++) {
+      const j = Math.sin((l * 4 + i) * 12.9898) * 0.5;
+      cardboardBox(b, 0.56, 0.4, 0.46, (i % 2 ? 0.29 : -0.29) + j * 0.03, 0.122 + l * 0.4, (i < 2 ? -0.24 : 0.24) + j * 0.02, j * 0.12);
+    }
+  }
+}
+
+function boxes(b: Builder, n: number) {
+  // A careless tower of boxes, and one that fell off.
+  for (let i = 0; i < n; i++) {
+    const j = Math.sin(i * 78.233) * 0.5;
+    cardboardBox(b, 0.75 - i * 0.04, 0.5, 0.62 - i * 0.03, j * 0.08, i * 0.5, j * 0.06, j * 0.5);
+  }
+  cardboardBox(b, 0.5, 0.36, 0.42, 0.7, 0, 0.35, 0.6);
+}
+
 export function buildProps(props: Prop[]): Map<PropMat, THREE.BufferGeometry> {
   const b = new Builder();
   const flip = new THREE.Matrix4().makeRotationX(Math.PI);
@@ -288,6 +331,9 @@ export function buildProps(props: Prop[]): Map<PropMat, THREE.BufferGeometry> {
       case 'mailbox': mailbox(b); break;
       case 'fan': fan(b); break;
       case 'stop': stopSign(b); break;
+      case 'crate': crate(b); break;
+      case 'pallet': pallet(b, p.v); break;
+      case 'boxes': boxes(b, p.v); break;
     }
   }
   const out = new Map<PropMat, THREE.BufferGeometry>();

@@ -48,7 +48,30 @@ export interface Door {
   swing: number;
 }
 
-export type PropType = 'chair' | 'desk' | 'cabinet' | 'crt' | 'mattress' | 'lamp' | 'phone' | 'mannequin' | 'stairs' | 'paper' | 'speaker' | 'house' | 'fence' | 'mailbox' | 'fan' | 'stop';
+export type PropType = 'chair' | 'desk' | 'cabinet' | 'crt' | 'mattress' | 'lamp' | 'phone' | 'mannequin' | 'stairs' | 'paper' | 'speaker' | 'house' | 'fence' | 'mailbox' | 'fan' | 'stop'
+  | 'crate' | 'pallet' | 'boxes';
+
+/** What a supply crate holds. */
+export type SupplyKind = 'battery' | 'chalk' | 'water';
+
+/** A supply crate against a wall, and what's sitting in it (until someone takes it). */
+export interface Supply {
+  id: number;
+  kind: SupplyKind;
+  /** The crate's centre, and the cell it's in. */
+  x: number;
+  z: number;
+  cell: number;
+  /** Which way the crate faces (its open side, into the room). */
+  ry: number;
+}
+
+/** A puddle on the floor: a circle that splashes underfoot. */
+export interface Puddle {
+  x: number;
+  z: number;
+  r: number;
+}
 
 /** A piece of furniture or debris. Front is local +z; `ceil` props hang upside down from the ceiling. */
 export interface Prop {
@@ -93,6 +116,8 @@ export interface Street {
 
 /** The floor shader cuts this many holes at most. */
 export const MAX_PITS = 48;
+/** The floor shader draws this many puddles at most. */
+export const MAX_PUDDLES = 32;
 
 /**
  * The level is a grid of cells. Walls are edges between cells, stored as one
@@ -118,6 +143,10 @@ export class Level {
   dead: Uint8Array = new Uint8Array(0);
   /** Holes in the floor of the Pitfalls: `hole` is what's drawn, `solid` what stops a body (a little inside it, so you can stand at the lip). */
   pits: { hole: Box; solid: Box }[] = [];
+  /** Puddles on the floor (Level 1's leaks). */
+  puddles: Puddle[] = [];
+  /** Supply crates (Level 1). */
+  supplies: Supply[] = [];
   /** The Street's hall, or null if no place for it fit. */
   street: Street | null = null;
   /** The Street's hall in cells. */
@@ -143,6 +172,8 @@ export class Level {
   /** Furniture collision boxes, and which cells each one touches. */
   solids: Box[] = [];
   solidsInCell = new Map<number, number[]>();
+  /** Cells with a door on one of their edges (kept clear of crates and puddles). */
+  private doorCells = new Uint8Array(0);
   /** Bumped whenever a wall changes, so cached paths know to re-plan. */
   version = 0;
 
@@ -155,6 +186,8 @@ export class Level {
     this.zone = new Uint8Array(this.cells);
     this.generate(new RNG(seed), new RNG(seed + ':zones'));
     this.furnish(new RNG(seed + ':furnish'));
+    this.placeSupplies(new RNG(seed + ':supplies'));
+    this.placePuddles(new RNG(seed + ':puddles'));
   }
 
   // ---- Cells and edges ----
@@ -214,8 +247,12 @@ export class Level {
 
   isWall(key: number) { return this.walls[key] === 1; }
 
-  /** Is this spot in the Poolrooms' water? */
-  wet(wx: number, wz: number) { return this.zone[this.cellAt(wx, wz)] === Zone.Pool; }
+  /** Is this spot in water: the Poolrooms, or a puddle? */
+  wet(wx: number, wz: number) {
+    if (this.zone[this.cellAt(wx, wz)] === Zone.Pool) return true;
+    for (const p of this.puddles) if ((wx - p.x) ** 2 + (wz - p.z) ** 2 < p.r * p.r) return true;
+    return false;
+  }
 
   open(c: number, dir: number) { return this.walls[this.edgeOf(c, dir)] === 0; }
 
@@ -383,7 +420,10 @@ export class Level {
     // 2. Carve open rooms of odd sizes: ordinary rooms, endless one-cell halls,
     // huge open halls and closets. Each gets its own ceiling height, so some are
     // cramped and some rise much further than the building around them could allow.
-    const rooms = 16;
+    // A warehouse is mostly huge, tall concrete halls joined by wide aisles.
+    const warehouse = this.def.gen.rooms === 'warehouse';
+    if (warehouse) this.carveWarehouse(rng);
+    const rooms = warehouse ? 0 : 16;
     for (let i = 0; i < rooms; i++) {
       const shape = rng.next();
       let rw: number, rh: number;
@@ -408,7 +448,7 @@ export class Level {
 
     // 3. Knock out some walls so there are loops, but keep plenty of dead ends.
     for (let k = 0; k < this.edgeCount; k++) {
-      if (this.walls[k] && !this.isBorder(k) && rng.chance(0.22)) this.walls[k] = 0;
+      if (this.walls[k] && !this.isBorder(k) && rng.chance(warehouse ? 0.3 : 0.22)) this.walls[k] = 0;
     }
 
     // 3b. The Manila Room: one ordinary room, walled in again with as few ways in
@@ -447,7 +487,8 @@ export class Level {
         const a = this.cell(vx - 1, vy - 1), b = this.cell(vx, vy);
         if (this.zone[a] === Zone.Street || this.zone[b] === Zone.Street) continue;
         const open = this.open(a, 1) && this.open(a, 2) && this.open(b, 0) && this.open(b, 3);
-        if (open && rng.chance(0.3)) this.pillars.push({ x: vx * this.CS, z: vy * this.CS });
+        // A warehouse's halls stand on rows of concrete columns.
+        if (open && rng.chance(warehouse ? 0.7 : 0.3)) this.pillars.push({ x: vx * this.CS, z: vy * this.CS });
       }
     }
 
@@ -481,7 +522,9 @@ export class Level {
     });
     for (let c = 0; c < this.cells; c++) {
       // The Street is lit end to end, like a sound stage.
-      this.panel[c] = (this.cx(c) + this.cy(c)) % 2 === 0 || this.zone[c] === Zone.Street || rng.chance(0.2) ? 1 : 0;
+      // A warehouse's lamps hang further apart, with dim stretches between.
+      const lamp = warehouse ? (this.cx(c) + this.cy(c)) % 2 === 0 && rng.chance(0.7) : (this.cx(c) + this.cy(c)) % 2 === 0 || rng.chance(0.2);
+      this.panel[c] = lamp || this.zone[c] === Zone.Street ? 1 : 0;
     }
 
     // 6. Exits on the border, far apart (never behind the Street's houses).
@@ -552,6 +595,34 @@ export class Level {
       for (const c of this.circuitCells[i]) make(c, allPool && z === Zone.Dark ? Zone.Pool : z);
     });
     if (allPool) for (let c = 0; c < this.cells; c++) if (this.zone[c] === Zone.Bare) make(c, Zone.Pool);
+    // No power anywhere: every light in the level is dead, where people arrive too.
+    if (gen.power === 'none') this.dead.fill(1);
+  }
+
+  /**
+   * A warehouse: every room is tall, and most of the floor is a few huge halls
+   * and the wide aisles between them, with the maze left only in the gaps.
+   */
+  private carveWarehouse(rng: RNG) {
+    const { W, H } = this;
+    for (let c = 0; c < this.cells; c++) this.ceil[c] = rng.chance(0.5) ? 3.6 : 4.2;
+    const halls = 11;
+    for (let i = 0; i < halls; i++) {
+      const aisle = rng.chance(0.3);
+      const along = rng.chance(0.5);
+      const rw = aisle ? (along ? rng.int(9, 18) : 2) : rng.int(4, 10);
+      const rh = aisle ? (along ? 2 : rng.int(9, 18)) : rng.int(4, 9);
+      const rx = rng.int(0, W - rw + 1), ry = rng.int(0, H - rh + 1);
+      const height = aisle ? rng.range(4.2, 5.5) : rng.range(5.5, 8);
+      for (let y = ry; y < ry + rh; y++) {
+        for (let x = rx; x < rx + rw; x++) {
+          const c = this.cell(x, y);
+          this.ceil[c] = Math.max(this.ceil[c], height);
+          if (x < rx + rw - 1) this.walls[this.edgeOf(c, 1)] = 0;
+          if (y < ry + rh - 1) this.walls[this.edgeOf(c, 2)] = 0;
+        }
+      }
+    }
   }
 
   /**
@@ -804,6 +875,7 @@ export class Level {
     const { W, H, CS } = this;
     const exitEdges = new Set(this.exits.map((e) => this.edgeOf(e.cell, e.dir)));
     const doorCell = new Uint8Array(this.cells);
+    this.doorCells = doorCell;
 
     // The way-through house's back door, out into the maze. It only ever swings
     // outwards: inwards, it would hit the walls of the house's narrow hall.
@@ -921,8 +993,10 @@ export class Level {
     }
 
     // Debris and furniture: thick in the furnished pockets, a rare thing anywhere else.
+    const office = this.def.gen.rooms === 'office';
     const density = (c: number) => {
       const z = this.zone[c];
+      if (!office) return 0;
       return z === Zone.Furnished ? 1 : z === Zone.Manila || z === Zone.Pool || z === Zone.Street || pitCell[c] ? 0 : 0.12;
     };
     const prop =(p: Partial<Prop> & { type: PropType; x: number; z: number }) => {
@@ -1015,6 +1089,8 @@ export class Level {
       }
     }
 
+    if (!office) this.furnishWarehouse(rng, prop, solidAt, doorCell);
+
     // Arrangements in open rooms, centred on grid corners so the walkways stay clear.
     for (let vy = 1; vy < H; vy++) {
       for (let vx = 1; vx < W; vx++) {
@@ -1070,6 +1146,100 @@ export class Level {
     const pc = this.cell(W >> 1, H >> 1);
     this.pa = { ...this.center(pc), y: this.ceil[pc] };
     prop({ type: 'speaker', x: this.pa.x, z: this.pa.z, y: this.pa.y, ry: rng.range(0, Math.PI * 2), ceil: true });
+  }
+
+  /**
+   * A warehouse's clutter: pallets against the walls, some stacked with boxes,
+   * and the odd tower of boxes out in the halls.
+   */
+  private furnishWarehouse(
+    rng: RNG,
+    prop: (p: Partial<Prop> & { type: PropType; x: number; z: number }) => Prop,
+    solidAt: (x: number, z: number, hx: number, hz: number, ry: number) => void,
+    doorCell: Uint8Array,
+  ) {
+    const CS = this.CS;
+    for (let c = 0; c < this.cells; c++) {
+      if (this.exitCells.has(c) || doorCell[c] || c === this.spawnCell || !rng.chance(0.2)) continue;
+      const wallDirs = [0, 1, 2, 3].filter((d) => !this.open(c, d) && !this.doorOnEdge.has(this.edgeOf(c, d)));
+      if (!wallDirs.length) continue;
+      const d = rng.pick(wallDirs);
+      const nx = -DX[d], nz = -DY[d];
+      const p = this.center(c);
+      const along = rng.range(-0.6, 0.6);
+      const x = p.x - nx * (CS / 2 - 0.62) + Math.abs(nz) * along, z = p.z - nz * (CS / 2 - 0.62) + Math.abs(nx) * along;
+      const ry = Math.atan2(nx, nz) + rng.range(-0.08, 0.08);
+      // v: how many layers of boxes are on it (0 to 3).
+      const v = rng.int(4);
+      prop({ type: 'pallet', x, z, ry, v });
+      solidAt(x, z, 0.62, 0.52, ry);
+    }
+    for (let vy = 1; vy < this.H; vy++) {
+      for (let vx = 1; vx < this.W; vx++) {
+        if (this.vertexWalls(vx, vy, -1) || !rng.chance(0.05)) continue;
+        const cells = [this.cell(vx - 1, vy - 1), this.cell(vx, vy - 1), this.cell(vx - 1, vy), this.cell(vx, vy)];
+        if (cells.some((c) => this.exitCells.has(c) || doorCell[c] || c === this.spawnCell)) continue;
+        const x = vx * CS, z = vy * CS;
+        if (this.pillars.some((q) => q.x === x && q.z === z)) continue;
+        prop({ type: 'boxes', x, z, ry: rng.range(0, Math.PI * 2), v: rng.int(2, 5) });
+        this.addSolid({ x0: x - 0.6, z0: z - 0.6, x1: x + 0.6, z1: z + 0.6 });
+      }
+    }
+  }
+
+  /**
+   * Supply crates against walls, spread out across the level and away from
+   * where people arrive: batteries, chalk and almond water, in turn.
+   */
+  private placeSupplies(rng: RNG) {
+    const n = this.def.gen.supplies;
+    if (!n) return;
+    const CS = this.CS;
+    const fromSpawn = this.bfs([this.spawnCell]);
+    const options: { c: number; d: number }[] = [];
+    for (let c = 0; c < this.cells; c++) {
+      if (this.exitCells.has(c) || this.doorCells[c] || fromSpawn[c] < 3) continue;
+      if ((this.solidsInCell.get(c) ?? []).length) continue;
+      for (let d = 0; d < 4; d++) {
+        if (!this.open(c, d) && !this.doorOnEdge.has(this.edgeOf(c, d))) options.push({ c, d });
+      }
+    }
+    const order: SupplyKind[] = ['battery', 'chalk', 'water'];
+    const kinds = rng.shuffle(Array.from({ length: n }, (_, i) => order[i % 3]));
+    const used: number[] = [];
+    for (const kind of kinds) {
+      // The spot furthest from every crate so far, out of a handful of tries.
+      let best: { c: number; d: number } | null = null, bestD = -1;
+      for (let t = 0; t < 30 && options.length; t++) {
+        const o = rng.pick(options);
+        if (used.includes(o.c)) continue;
+        const d = used.length ? Math.min(...used.map((u) => Math.hypot(this.cx(u) - this.cx(o.c), this.cy(u) - this.cy(o.c)))) : 99;
+        if (d > bestD) { bestD = d; best = o; }
+      }
+      if (!best) break;
+      used.push(best.c);
+      const nx = -DX[best.d], nz = -DY[best.d];
+      const p = this.center(best.c);
+      const x = p.x - nx * (CS / 2 - 0.4), z = p.z - nz * (CS / 2 - 0.4);
+      const ry = Math.atan2(nx, nz);
+      this.supplies.push({ id: this.supplies.length, kind, x, z, cell: best.c, ry });
+      this.props.push({ type: 'crate', x, z, y: 0, ry, rx: 0, rz: 0, ceil: false, cell: best.c, v: 0 });
+      this.addSolid({ x0: x - 0.32, z0: z - 0.32, x1: x + 0.32, z1: z + 0.32 });
+    }
+  }
+
+  /** Puddles where the roof leaks, never in a doorway. */
+  private placePuddles(rng: RNG) {
+    const n = Math.min(MAX_PUDDLES, this.def.gen.puddles);
+    for (let i = 0, tries = 0; i < n && tries < n * 10; tries++) {
+      const c = rng.int(this.cells);
+      if (this.exitCells.has(c) || this.doorCells[c] || this.zone[c] === Zone.Pool) continue;
+      const p = this.center(c);
+      const x = p.x + rng.range(-0.7, 0.7), z = p.z + rng.range(-0.7, 0.7);
+      if (this.puddles.some((q) => Math.hypot(q.x - x, q.z - z) < q.r + 1)) continue;
+      this.puddles.push({ x, z, r: rng.range(0.55, 1.25) });
+      i++;
+    }
   }
 
   /** Where a body comes out of a portal door. */

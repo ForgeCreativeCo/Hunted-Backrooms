@@ -7,7 +7,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { CFG } from './config';
 import { Creature } from './creature';
 import { Game } from './game';
-import { MAX_PITS, Zone, type Door } from './level';
+import { MAX_PITS, MAX_PUDDLES, Zone, type Door } from './level';
 import { Person } from './person';
 import { buildProps, PropMat } from './props';
 import { hashString } from './rng';
@@ -194,6 +194,11 @@ const zoneLook = {
   /** The Street's hall (x0, z0, x1, z1), and 1 if its road runs along x. */
   street: { value: new THREE.Vector4() },
   streetAlongX: { value: 0 },
+  /** Puddles on the floor: x, z, radius. */
+  puddles: { value: Array.from({ length: MAX_PUDDLES }, () => new THREE.Vector3()) },
+  puddleCount: { value: 0 },
+  /** 1 where the whole level is bare concrete (Level 1's warehouse). */
+  concrete: { value: 0 },
 };
 
 /**
@@ -214,6 +219,9 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
     sh.uniforms.uPitCount = zoneLook.pitCount;
     sh.uniforms.uStreet = zoneLook.street;
     sh.uniforms.uStreetAlongX = zoneLook.streetAlongX;
+    sh.uniforms.uPuddles = zoneLook.puddles;
+    sh.uniforms.uPuddleCount = zoneLook.puddleCount;
+    sh.uniforms.uConcrete = zoneLook.concrete;
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', `#include <common>
         attribute float aBright;
@@ -245,6 +253,9 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
         uniform int uPitCount;
         uniform vec4 uStreet;
         uniform float uStreetAlongX;
+        uniform vec3 uPuddles[${MAX_PUDDLES}];
+        uniform int uPuddleCount;
+        uniform float uConcrete;
         varying float hBright;
         varying float hWalls;
         varying vec3 hW;
@@ -274,6 +285,16 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
         #ifdef SURF_WALL
           // Wallpaper mapped in world space, so walls of any height keep its scale.
           diffuseColor = vec4(diffuse, opacity) * texture2D(map, vec2((hW.x + hW.z) / 3.16, hW.y / 2.7));
+          if (uConcrete > 0.5) {
+            // Concrete block, laid in courses, each block a shade off its neighbours.
+            vec2 bq = vec2((hW.x + hW.z) / 0.8, hW.y / 0.4);
+            bq.x += mod(floor(bq.y), 2.0) * 0.5;
+            vec2 bf = fract(bq);
+            float mortar = step(0.03, bf.x) * step(0.05, bf.y);
+            float bs = fract(sin(dot(floor(bq), vec2(12.9898, 78.233))) * 43758.5453);
+            vec3 blk = vec3(0.5, 0.5, 0.47) * (0.88 + 0.14 * bs);
+            diffuseColor.rgb = mix(blk * 0.72, blk, mortar);
+          }
         #else
           #include <map_fragment>
         #endif
@@ -289,7 +310,24 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
           float n1 = texture2D(uGrime, hW.xz * 0.03).r;
           float n2 = texture2D(uGrime, hW.xz * 0.19).g;
           hWet = smoothstep(0.58, 0.68, n1 * 0.75 + n2 * 0.25);
+          if (uConcrete > 0.5) {
+            // Poured concrete, with a joint every few metres and the odd crack.
+            vec2 jq = abs(fract(hW.xz / 3.0 + 0.5) - 0.5) * 3.0;
+            float joint = 1.0 - 0.35 * (1.0 - step(0.02, min(jq.x, jq.y)));
+            float crack = smoothstep(0.015, 0.0, abs(n1 - 0.5)) * step(0.55, n2);
+            diffuseColor.rgb = vec3(0.4, 0.4, 0.38) * joint * (1.0 - 0.45 * crack);
+            hWet *= 0.4;
+          }
           diffuseColor.rgb *= (0.8 + 0.4 * n2) * mix(1.0, 0.45, hWet);
+          // Puddles: dark, still water with a ragged edge.
+          for (int i = 0; i < ${MAX_PUDDLES}; i++) {
+            if (i >= uPuddleCount) break;
+            vec3 pd = uPuddles[i];
+            float r = length(hW.xz - pd.xy) / pd.z + (n2 - 0.5) * 0.35;
+            float inside = 1.0 - smoothstep(0.85, 1.0, r);
+            diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 0.45, inside);
+            hWet = max(hWet, inside);
+          }
           // The Pitfalls' carpet: darker and browner, as if soaked through.
           float pitfall = texture2D(uCellTex, hW.xz / uMapSize).g;
           diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.42, 0.36, 0.28), pitfall);
@@ -351,15 +389,21 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
           vec2 tile = floor(hW.xz / 0.75);
           float hsh = fract(sin(dot(tile, vec2(12.9898, 78.233))) * 43758.5453);
           float ring = texture2D(uGrime, hW.xz * 0.11).r;
-          diffuseColor.rgb *= mix(1.0, 0.9, step(0.65, hsh));
-          float stain = step(0.88, hsh) * smoothstep(0.4, 0.62, ring);
-          diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.68, 0.55, 0.32), stain);
+          if (uConcrete > 0.5) {
+            // A bare concrete deck, streaked where water has run along it.
+            diffuseColor.rgb = vec3(0.3, 0.3, 0.29) * (0.8 + 0.4 * ring);
+          } else {
+            diffuseColor.rgb *= mix(1.0, 0.9, step(0.65, hsh));
+            float stain = step(0.88, hsh) * smoothstep(0.4, 0.62, ring);
+            diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.68, 0.55, 0.32), stain);
+          }
           hPool = texture2D(uZoneTex, hW.xz / uMapSize).g;
           diffuseColor.rgb = mix(diffuseColor.rgb, hTile(hW.xz), hPool);
           diffuseColor.rgb *= mix(0.55, 1.0, hAO());
         #endif
         #ifdef SURF_TRIM
           diffuseColor.rgb *= 0.8 + 0.2 * texture2D(uGrime, vec2((hW.x + hW.z) * 0.3, 0.2)).g;
+          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.26, 0.26, 0.25), uConcrete);
           hPool = texture2D(uZoneTex, (hW.xz + normalize(hN).xz * 1.4) / uMapSize).g;
           diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.62, 0.7, 0.7), hPool);
         #endif`)
@@ -426,6 +470,7 @@ export class World3D {
   private wallKeys: number[] = [];
   private trimKeys: number[] = [];
   private cellTex: THREE.DataTexture;
+  private supplyViews: THREE.Group[] = [];
   private doorViews: { d: Door; pivot: THREE.Group; base: number; k: number; cur: number }[] = [];
   private floor: THREE.InstancedMesh;
   private ceil: THREE.InstancedMesh;
@@ -507,11 +552,15 @@ export class World3D {
     if (L.street) zoneLook.street.value.set(L.street.x0, L.street.z0, L.street.x1, L.street.z1);
     else zoneLook.street.value.set(0, 0, 0, 0);
     zoneLook.streetAlongX.value = L.street?.alongX ? 1 : 0;
+    L.puddles.forEach((p, i) => zoneLook.puddles.value[i].set(p.x, p.z, p.r));
+    zoneLook.puddleCount.value = L.puddles.length;
+    const concrete = L.def.look.surface === 'concrete';
+    zoneLook.concrete.value = concrete ? 1 : 0;
     const grime = T.grime();
     const paper = T.wallpaper(), carpet = T.carpet(), tiles = T.ceiling();
 
     // Walls: one instanced box per wall edge, with a baseboard and the odd outlet.
-    const wallMat = surface('WALL', { map: paper.map, normalMap: paper.normal, normalScale: new THREE.Vector2(0.3, 0.3), roughness: 0.82 }, grime);
+    const wallMat = surface('WALL', { map: paper.map, normalMap: paper.normal, normalScale: new THREE.Vector2(concrete ? 0.12 : 0.3, concrete ? 0.12 : 0.3), roughness: 0.82 }, grime);
     // Unit boxes, scaled per instance: full walls, doorway jambs, and bulkheads where ceilings change height.
     this.walls = instanced(new THREE.BoxGeometry(1, 1, 0.16), wallMat, L.edgeCount * 3);
     const trimMat = surface('TRIM', { color: 0x8d7650, roughness: 0.55 }, grime);
@@ -525,7 +574,7 @@ export class World3D {
     this.scene.add(this.walls, this.trim, this.outlets);
 
     // Floor and ceiling tiles per cell.
-    const floorMat = surface('FLOOR', { map: carpet.map, normalMap: carpet.normal, normalScale: new THREE.Vector2(0.7, 0.7), roughness: 0.95 }, grime);
+    const floorMat = surface('FLOOR', { map: carpet.map, normalMap: carpet.normal, normalScale: new THREE.Vector2(concrete ? 0.08 : 0.7, concrete ? 0.08 : 0.7), roughness: concrete ? 0.75 : 0.95 }, grime);
     this.floor = instanced(new THREE.PlaneGeometry(CS, CS).rotateX(-Math.PI / 2), floorMat, L.cells);
     const ceilMat = surface('CEIL', { map: tiles.map, normalMap: tiles.normal, normalScale: new THREE.Vector2(0.25, 0.25), roughness: 0.9 }, grime);
     this.ceil = instanced(new THREE.PlaneGeometry(CS, CS).rotateX(Math.PI / 2), ceilMat, L.cells);
@@ -614,6 +663,7 @@ export class World3D {
     this.buildExits();
     this.buildDoors(grime);
     this.buildFurniture(grime);
+    this.buildSupplies(grime);
 
     // The monster sees a little in the dark: a cold, faint light that follows its eyes.
     this.darkvision = new THREE.PointLight(0x6f86c0, 0, 8, 1.6);
@@ -892,6 +942,7 @@ export class World3D {
       roof: pm({ color: 0x34373a, roughness: 0.9 }),
       glass: pm({ color: 0x0d1114, roughness: 0.12, metalness: 0.4 }),
       red: pm({ color: 0x9c1b16, roughness: 0.5 }),
+      cardboard: pm({ color: 0x8a6a45, roughness: 0.95 }),
       // Glows whether or not there's power.
       screen: new THREE.MeshBasicMaterial({ color: new THREE.Color(0.16, 0.32, 0.26) }),
       shade: new THREE.MeshBasicMaterial({ color: new THREE.Color(1.8, 1.35, 0.7), side: THREE.DoubleSide }),
@@ -900,6 +951,54 @@ export class World3D {
       const mesh = new THREE.Mesh(geo, mats[mat]);
       mesh.frustumCulled = false;
       this.scene.add(mesh);
+    }
+  }
+
+  /** What's in each supply crate, shown until someone takes it. */
+  private buildSupplies(grime: THREE.Texture) {
+    const L = this.game.level;
+    if (!L.supplies.length) return;
+    const pm = (p: THREE.MeshStandardMaterialParameters) => surface('PROP', p, grime);
+    // A faint glow of their own, so a crate's contents catch the eye through the fog.
+    const glow = (c: number) => ({ emissive: new THREE.Color(c), emissiveIntensity: 0.25 });
+    const cell = pm({ color: 0x2a2a28, roughness: 0.4, metalness: 0.5, ...glow(0x554422) });
+    const brass = pm({ color: 0xc9a24a, roughness: 0.3, metalness: 0.8 });
+    const chalk = pm({ color: 0xf2efe6, roughness: 0.9, ...glow(0x666660) });
+    const label = pm({ color: 0x2f5f8a, roughness: 0.6 });
+    const bottle = pm({ color: 0xe9f1ee, roughness: 0.15, transparent: true, opacity: 0.75, ...glow(0x667070) });
+    const cap = pm({ color: 0x3f7fd0, roughness: 0.5 });
+    const mesh = (parent: THREE.Object3D, geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number, rz = 0) => {
+      const m = new THREE.Mesh(geo, mat);
+      m.position.set(x, y, z);
+      m.rotation.z = rz;
+      parent.add(m);
+    };
+    for (const sp of L.supplies) {
+      const g = new THREE.Group();
+      g.position.set(sp.x, 0.37, sp.z);
+      g.rotation.y = sp.ry;
+      if (sp.kind === 'battery') {
+        // A handful of batteries standing in the straw.
+        for (let i = 0; i < 4; i++) {
+          const x = -0.12 + i * 0.075, z = (i % 2) * 0.05;
+          mesh(g, new THREE.CylinderGeometry(0.03, 0.03, 0.13, 10), cell, x, 0.065, z);
+          mesh(g, new THREE.CylinderGeometry(0.012, 0.012, 0.012, 8), brass, x, 0.135, z);
+        }
+      } else if (sp.kind === 'chalk') {
+        // A box of chalk, lid off, and a few loose sticks.
+        mesh(g, new THREE.BoxGeometry(0.2, 0.06, 0.12), label, 0, 0.03, 0);
+        for (let i = 0; i < 5; i++) mesh(g, new THREE.CylinderGeometry(0.011, 0.011, 0.11, 6), chalk, -0.08 + i * 0.04, 0.07, 0, Math.PI / 2 + 0.1 * i);
+      } else {
+        // Two bottles of almond water.
+        for (const x of [-0.07, 0.07]) {
+          mesh(g, new THREE.CylinderGeometry(0.04, 0.04, 0.2, 12), bottle, x, 0.1, 0);
+          mesh(g, new THREE.CylinderGeometry(0.02, 0.03, 0.04, 10), bottle, x, 0.22, 0);
+          mesh(g, new THREE.CylinderGeometry(0.021, 0.021, 0.025, 10), cap, x, 0.25, 0);
+          mesh(g, new THREE.CylinderGeometry(0.041, 0.041, 0.07, 12), label, x, 0.1, 0);
+        }
+      }
+      this.scene.add(g);
+      this.supplyViews.push(g);
     }
   }
 
@@ -1169,12 +1268,12 @@ export class World3D {
     this.darkvision.color.set(human ? 0x9aa4b8 : 0x6f86c0);
 
     // In the Poolrooms the air turns pale and clear.
-    const inPool = L.wet(vx, vz) ? 1 : 0;
+    const inPool = L.zone[L.cellAt(vx, vz)] === Zone.Pool ? 1 : 0;
     this.poolAir += (inPool - this.poolAir) * Math.min(1, dt * 1.5);
     this.waterTime.value = t;
     const fog = this.scene.fog as THREE.FogExp2;
     fog.color.copy(FOG_DARK).lerp(this.col.copy(this.fogLit).lerp(FOG_POOLROOMS, this.poolAir), here);
-    fog.density = 0.042 + (1 - here) * 0.03 - this.nightVision * 0.025 - this.poolAir * here * 0.014;
+    fog.density = L.def.look.fogDensity + (1 - here) * 0.03 - this.nightVision * 0.025 - this.poolAir * here * 0.014;
     (this.scene.background as THREE.Color).copy(fog.color);
 
     // Dust drifts and wraps around the camera.
@@ -1200,6 +1299,7 @@ export class World3D {
 
     this.syncChalk();
     this.syncPeople(dt, t);
+    this.supplyViews.forEach((v, i) => (v.visible = !g.taken[i]));
 
     this.hunt.uniforms.time.value = t;
     this.hunt.uniforms.redden.value = redden;

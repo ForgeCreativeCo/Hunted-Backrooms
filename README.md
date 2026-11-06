@@ -29,7 +29,7 @@ A run is a descent through the Backrooms. Every exit leads one level deeper, and
 - The run is over when a level ends with nobody out. The end screen says how deep it got.
 - Solo as the monster, **Follow them down** takes you after the survivors. Solo as a human, finding an exit lets you watch the others try for the exits until they close; then you go down together.
 - Online, the next level starts for the whole room six seconds after the last one ends. A human player who didn't get out watches the rest of the run.
-- Each level is one of a set of described levels (`src/levels.ts`): how it's laid out, its air, light and hum, and the line shown as you arrive. The main way down is Level 0, repeating until more levels exist. Below the first level, any exit has a 1 in 5 chance of leading to a side level instead, never two in a row: the Poolrooms or the Street. After a side level the run carries on down the main way.
+- Each level is one of a set of described levels (`src/levels.ts`): how it's laid out, its air, light and hum, and the line shown as you arrive. The main way down is Level 0, Level 1, Level 6, and round again (Levels 2 to 5 will slot in before Level 6). Below the first level, any exit has a 1 in 5 chance of leading to a side level instead, never two in a row: the Poolrooms or the Street. After a side level the run carries on down the main way.
 - Which level each depth is comes from the run's seed, and each level's layout from the seed and its depth (`seed:L2`, `seed:L3` …), so everyone in a room walks the same building. The HUD shows the level's name and the depth; depth is the run's score.
 
 ## The levels
@@ -42,6 +42,18 @@ Every level is generated from its seed, so online players all walk the same buil
 - One region never had power. Its lights are dead and silent all night; the monster sees there in night vision, and its Blackout does nothing.
 - The Pitfalls: a region of darker, soaked carpet with holes in the floor that drop away into black. You can stand at the lip but not cross.
 - The Manila Room: one room walled in with as few ways in as the level allows, its wallpaper gone red.
+
+### Level 1
+
+- A warehouse: huge concrete halls on rows of columns, joined by wide aisles, under ceilings five to eight metres up. The lamps hang further apart than Level 0's, and the air is a thick grey fog, so wanderers see (and spot an exit from) only half as far.
+- Puddles where the roof leaks. Like the Poolrooms' water, they splash: footsteps in one carry 1.7 times as far.
+- Pallets of boxes against the walls, and the odd tower of boxes out in the halls.
+- Eight supply crates, left by someone who came through before. Walk up to one to take what's in it: batteries (45% of a flashlight back), a box of chalk (4 more arrows), or almond water (fear down by 40, and your breath back). AI wanderers rummage through any crate they pass. Whatever you take carries on down with you.
+
+### Level 6
+
+- Level 0's maze with no power anywhere: every light is dead and silent, where you arrive too. The monster sees all of it in night vision, so its Blackout has nothing left to do.
+- Nowhere is lit, so nowhere calms you down. The dark frightens you at half the rate of a dead region in Level 0, but it never stops, except while your flashlight is on. Batteries don't come back here.
 
 ### The Poolrooms (side level)
 
@@ -112,7 +124,7 @@ If players can't connect:
 
 ## Checks
 
-- `npm run sim` runs 20 headless solo nights with an idle monster and prints escape times (add `-- --chase` for a bot that chases). Use it when tuning `src/config.ts`.
+- `npm run sim` runs 20 headless solo nights with an idle monster and prints escape times (add `-- --chase` for a bot that chases, and `-- --level level1` to play another level, by its id in `src/levels.ts`). Use it when tuning `src/config.ts`.
 - `npm run net-test` runs bot clients against a running server (start one first with `npm run dev`) and checks the rooms, roles, movement validation, abilities, chalk, flashlight and disconnects.
 
 ## Sound

@@ -16,6 +16,11 @@ export const CFG = {
   FEAR_CARRY: 0.7, // fear eases this much on the way down (0.7 = 30% off)
   DREAD_CARRY: 0.5, // the monster keeps half its dread, never less than it starts a level with
   CHALK: 12, // chalk arrows each wanderer can draw in a whole run
+  // Supply crates (Level 1)
+  SUPPLY_BATTERY: 45, // battery a pack of batteries puts back
+  SUPPLY_CHALK: 4, // chalk arrows in a box of chalk
+  SUPPLY_CALM: 40, // fear a bottle of almond water takes away
+  SUPPLY_REACH: 1.2, // metres from a crate a player can take what's in it
   QUOTA: 120,
   STARS: [120, 180, 240],
   WANDERER_ENTRY: [0, 25, 50], // seconds after dusk each wanderer noclips in

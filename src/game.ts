@@ -8,7 +8,7 @@ export type WState = 'explore' | 'alert' | 'flee' | 'hide' | 'escape' | 'panic' 
 export interface GameEvents {
   sound(
     kind: 'step' | 'splash' | 'exitDying' | 'scream' | 'blackout' | 'lightsOn' | 'shift' | 'chalk' | 'gasp' | 'catch' | 'roar' | 'escape' | 'breath'
-      | 'door' | 'doorShut' | 'phone',
+      | 'door' | 'doorShut' | 'phone' | 'pickup',
     x: number, z: number, loud: number, who?: Wanderer,
   ): void;
   caption(text: string, who: Wanderer | null): void;
@@ -29,6 +29,8 @@ export interface GameOptions {
   party?: PartyMember[];
   /** What the monster brings down from the level above. */
   carry?: MonsterCarry;
+  /** Play this level whatever the depth would pick (for the sim and tests). */
+  def?: LevelDef;
 }
 
 /** Someone who made it out of a level and carries on down, with what they had left. */
@@ -183,6 +185,8 @@ export class Game {
   result: NightResult | null = null;
   /** Seconds until the exits close, once the first wanderer is out; -1 before that. */
   exitT = -1;
+  /** Supply crates already emptied, by supply id. */
+  taken: Uint8Array;
   /** Fear the monster harvested on the levels above this one. */
   readonly banked: number;
   private distMonster: Int32Array = new Int32Array(0);
@@ -203,8 +207,9 @@ export class Game {
     // The monster arrives already strong, but has to feed again.
     if (opts.carry) this.dread = Math.max(CFG.DREAD_START, opts.carry.dread * CFG.DREAD_CARRY);
     const ls = levelSeed(seed, this.depth);
-    this.def = levelFor(seed, this.depth);
+    this.def = opts.def ?? levelFor(seed, this.depth);
     this.level = new Level(ls, this.def);
+    this.taken = new Uint8Array(this.level.supplies.length);
     this.rng = new RNG(ls + ':night');
     this.blackout = new Float32Array(this.level.circuitCount);
     this.phoneT = this.rng.range(45, 90);
@@ -262,6 +267,37 @@ export class Game {
   addFear(w: Wanderer, amount: number) {
     if (amount > 0) amount *= this.fearMult(w);
     w.fear = Math.max(0, Math.min(100, w.fear + amount));
+  }
+
+  /** How far a wanderer can see, in cells: less in a foggy level. */
+  private viewRange(lit: boolean) {
+    return (lit ? CFG.VIEW_LIT : CFG.VIEW_DARK) * this.def.rules.view;
+  }
+
+  /** Take whatever is in a supply crate. */
+  private takeSupply(w: Wanderer, i: number) {
+    const s = this.level.supplies[i];
+    this.taken[i] = 1;
+    let what: string;
+    if (s.kind === 'battery') {
+      w.battery = Math.min(100, w.battery + CFG.SUPPLY_BATTERY);
+      what = 'batteries';
+    } else if (s.kind === 'chalk') {
+      w.chalkLeft += CFG.SUPPLY_CHALK;
+      what = 'a box of chalk';
+    } else {
+      w.fear = Math.max(0, w.fear - CFG.SUPPLY_CALM);
+      w.stamina = 100;
+      w.exhausted = false;
+      what = 'almond water';
+    }
+    this.events.sound('pickup', s.x, s.z, 1, w);
+    this.events.toast(`${w.name} found ${what}`);
+  }
+
+  /** Is there something left in a crate in this cell? */
+  supplyIn(cell: number) {
+    return this.level.supplies.findIndex((s, i) => s.cell === cell && !this.taken[i]);
   }
 
   private say(w: Wanderer, lines: string[]) {
@@ -411,7 +447,7 @@ export class Game {
   canSeePoint(w: Wanderer, px: number, pz: number, litTarget: boolean, coneCos = 0.26): boolean {
     const dx = px - w.x, dz = pz - w.z;
     const d = Math.hypot(dx, dz);
-    const range = (litTarget ? CFG.VIEW_LIT : CFG.VIEW_DARK) * this.level.CS;
+    const range = this.viewRange(litTarget) * this.level.CS;
     if (d > range) return false;
     if (d > 1.0) {
       const facing = (dx * Math.cos(w.heading) + dz * Math.sin(w.heading)) / d;
@@ -486,6 +522,10 @@ export class Game {
       return;
     }
 
+    L.supplies.forEach((s, i) => {
+      if (!this.taken[i] && Math.hypot(s.x - w.x, s.z - w.z) < CFG.SUPPLY_REACH) this.takeSupply(w, i);
+    });
+
     const saw = w.sees;
     w.sees = this.seesMonster(w);
     const dm = Math.hypot(m.x - w.x, m.z - w.z);
@@ -501,7 +541,7 @@ export class Game {
       w.seenT = this.t;
     }
     const lit = this.isLit(w.cell);
-    if (!lit && !w.flash) this.addFear(w, 1.5 * dt);
+    if (!lit && !w.flash) this.addFear(w, 1.5 * this.def.rules.darkFear * dt);
     else if (lit && this.t - w.seenT > 6) w.fear = Math.max(0, w.fear - 0.7 * dt);
 
     const sprinting = w.sprint && w.moving && !w.exhausted && !w.crouch;
@@ -644,7 +684,7 @@ export class Game {
 
     // The dark and the quiet wear on them; calm returns slowly in the light.
     const lit = this.isLit(w.cell);
-    if (!lit) this.addFear(w, 1.5 * dt);
+    if (!lit) this.addFear(w, 1.5 * this.def.rules.darkFear * dt);
     else if (this.t - w.seenT > 6 && (w.state === 'explore' || w.state === 'escape')) {
       w.fear = Math.max(0, w.fear - 0.7 * dt);
     }
@@ -771,7 +811,7 @@ export class Game {
     if (w.exitTarget < 0 && Math.floor(this.t * 4) !== Math.floor((this.t - dt) * 4)) {
       for (const e of L.exits) {
         const p = L.center(e.cell);
-        if (Math.hypot(p.x - w.x, p.z - w.z) > CFG.EXIT_VIEW * L.CS) continue;
+        if (Math.hypot(p.x - w.x, p.z - w.z) > CFG.EXIT_VIEW * this.def.rules.view * L.CS) continue;
         if (!L.los(w.x, w.z, p.x, p.z)) continue;
         w.exitTarget = e.cell;
         this.say(w, LINES.exit);
@@ -807,6 +847,9 @@ export class Game {
       this.events.caption('I\'m out. I\'m OUT.', w);
       return;
     }
+
+    const sup = this.supplyIn(w.cell);
+    if (sup >= 0) this.takeSupply(w, sup);
 
     // The walls aren't where they remember them.
     const mask = L.mask(w.cell);
@@ -887,6 +930,8 @@ export class Game {
       if (d === fwdDir) s -= 0.4;
       // Chalk says "I already went this way".
       if (mark && mark.dir === d) s += 4;
+      // Something left in a crate over there.
+      if (this.supplyIn(n) >= 0) s -= 3;
       if (s < bestS) { bestS = s; best = n; }
     }
     return best;

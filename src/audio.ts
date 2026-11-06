@@ -484,6 +484,13 @@ export class Sound {
         }
         break;
       }
+      case 'pickup': {
+        // Rummaging through a crate: a rustle of packing, and a soft clink.
+        const p = this.panner(x, z, 0.4);
+        this.noise(p, 0.35, 1800, 1.2, 0.35);
+        setTimeout(() => this.tone(p, 'sine', 1320, 1180, 0.25, 0.08), 180);
+        break;
+      }
       case 'lightsOn':
         this.noise(this.panner(x, z, 2.6), 0.08, 2500, 2, 0.3);
         break;

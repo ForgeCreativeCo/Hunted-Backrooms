@@ -3,8 +3,13 @@
 // how long wanderers take to find an exit and how scared they get.
 import { CFG } from '../src/config';
 import { Game } from '../src/game';
+import { LEVELS } from '../src/levels';
 
 const chase = process.argv.includes('--chase');
+// `--level level1` plays every night on that level instead of Level 0.
+const li = process.argv.indexOf('--level');
+const def = li >= 0 ? LEVELS.find((l) => l.id === process.argv[li + 1]) : undefined;
+if (li >= 0 && !def) throw new Error(`No level ${process.argv[li + 1]}; try ${LEVELS.map((l) => l.id).join(', ')}`);
 const nights = 20;
 const dt = 1 / 30;
 const escapeTimes: number[] = [];
@@ -12,7 +17,7 @@ let escaped = 0, total = 0, caught = 0, peakFearSum = 0;
 
 for (let n = 0; n < nights; n++) {
   const events = { sound() {}, caption() {}, toast() {} };
-  const g = new Game(`sim-${n}`, events);
+  const g = new Game(`sim-${n}`, events, { def });
   const peak = new Map<number, number>();
   while (!g.over) {
     if (chase) {
@@ -55,7 +60,7 @@ for (let n = 0; n < nights; n++) {
 
 escapeTimes.sort((a, b) => a - b);
 const med = escapeTimes[Math.floor(escapeTimes.length / 2)] ?? NaN;
-console.log(`\n${chase ? 'CHASE' : 'IDLE'} monster over ${nights} nights (${CFG.NIGHT_SECONDS}s each)`);
+console.log(`\n${chase ? 'CHASE' : 'IDLE'} monster over ${nights} nights (${CFG.NIGHT_SECONDS}s each) on ${def?.name ?? 'Level 0'}`);
 console.log(`escaped ${escaped}/${total}, caught ${caught}/${total}`);
 console.log(`escape time: min ${escapeTimes[0]?.toFixed(0)}s, median ${med.toFixed(0)}s, max ${escapeTimes.at(-1)?.toFixed(0)}s`);
 console.log(`avg peak fear ${(peakFearSum / total).toFixed(0)}`);
