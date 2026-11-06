@@ -192,6 +192,9 @@ const zoneLook = {
   tex: { value: null as THREE.Texture | null },
   pits: { value: Array.from({ length: MAX_PITS }, () => new THREE.Vector4()) },
   pitCount: { value: 0 },
+  /** The Street's hall (x0, z0, x1, z1), and 1 if its road runs along x. */
+  street: { value: new THREE.Vector4() },
+  streetAlongX: { value: 0 },
 };
 
 /**
@@ -210,6 +213,8 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
     sh.uniforms.uZoneTex = zoneLook.tex;
     sh.uniforms.uPits = zoneLook.pits;
     sh.uniforms.uPitCount = zoneLook.pitCount;
+    sh.uniforms.uStreet = zoneLook.street;
+    sh.uniforms.uStreetAlongX = zoneLook.streetAlongX;
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', `#include <common>
         attribute float aBright;
@@ -239,6 +244,8 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
         uniform sampler2D uZoneTex;
         uniform vec4 uPits[${MAX_PITS}];
         uniform int uPitCount;
+        uniform vec4 uStreet;
+        uniform float uStreetAlongX;
         varying float hBright;
         varying float hWalls;
         varying vec3 hW;
@@ -291,6 +298,31 @@ function surface(kind: Surf, params: THREE.MeshStandardMaterialParameters, grime
           hPool = texture2D(uZoneTex, hW.xz / uMapSize).g;
           diffuseColor.rgb = mix(diffuseColor.rgb, hTile(hW.xz) * vec3(0.78, 0.9, 0.92) * (0.9 + 0.2 * n2), hPool);
           hWet = max(hWet, hPool);
+          // The Street: asphalt down the middle with a double yellow line, kerbs,
+          // and concrete pavement in front of the houses.
+          if (hW.x > uStreet.x && hW.x < uStreet.z && hW.z > uStreet.y && hW.z < uStreet.w) {
+            bool ax = uStreetAlongX > 0.5;
+            float along = ax ? hW.x : hW.z;
+            float across = ax ? hW.z - (uStreet.y + uStreet.w) * 0.5 : hW.x - (uStreet.x + uStreet.z) * 0.5;
+            float halfW = ax ? (uStreet.w - uStreet.y) * 0.5 : (uStreet.z - uStreet.x) * 0.5;
+            float a = abs(across), fromWall = halfW - a;
+            float grit = texture2D(uGrime, hW.xz * 0.7).g;
+            vec3 col = vec3(0.25, 0.25, 0.24) * (0.82 + 0.35 * n2) * (0.9 + 0.2 * grit);
+            // A few darker patches where the road was mended.
+            col *= mix(1.0, 0.8, smoothstep(0.6, 0.65, n1));
+            float line = step(0.06, a) * step(a, 0.17);
+            col = mix(col, vec3(0.78, 0.6, 0.14) * (0.85 + 0.2 * grit), line);
+            // A manhole every so often, in one lane.
+            vec2 mh = vec2(mod(along, 12.0) - 7.5, across - 1.9);
+            float r = length(mh);
+            col = mix(col, vec3(0.13, 0.12, 0.11) * (0.8 + 0.4 * step(0.5, fract((mh.x + mh.y) * 9.0))), step(r, 0.36));
+            col = mix(col, vec3(0.09), step(0.33, r) * step(r, 0.36));
+            vec3 walk = vec3(0.56, 0.55, 0.51) * (0.88 + 0.22 * grit) * mix(0.75, 1.0, step(0.03, abs(fract(along / 1.5) - 0.5) * 1.5));
+            col = mix(col, walk, step(fromWall, 2.4));
+            col = mix(col, vec3(0.66, 0.65, 0.6), step(2.3, fromWall) * step(fromWall, 2.45)); // kerb
+            diffuseColor.rgb = col;
+            hWet *= 0.25;
+          }
           diffuseColor.rgb *= hAO();
         #endif
         #ifdef SURF_WALL
@@ -466,6 +498,9 @@ export class World3D {
     zoneLook.tex.value = zoneTex;
     L.pits.forEach(({ hole }, i) => zoneLook.pits.value[i].set(hole.x0, hole.z0, hole.x1, hole.z1));
     zoneLook.pitCount.value = L.pits.length;
+    if (L.street) zoneLook.street.value.set(L.street.x0, L.street.z0, L.street.x1, L.street.z1);
+    else zoneLook.street.value.set(0, 0, 0, 0);
+    zoneLook.streetAlongX.value = L.street?.alongX ? 1 : 0;
     const grime = T.grime();
     const paper = T.wallpaper(), carpet = T.carpet(), tiles = T.ceiling();
 
@@ -843,6 +878,13 @@ export class World3D {
       skin: pm({ color: 0xd8cdbd, roughness: 0.32 }),
       paper: pm({ color: 0xe2dccb, roughness: 0.9 }),
       dark: pm({ color: 0x1d1b19, roughness: 0.5 }),
+      sidingBlue: pm({ color: 0x55636e, roughness: 0.7 }),
+      sidingGrey: pm({ color: 0x8b8c84, roughness: 0.7 }),
+      sidingRed: pm({ color: 0x6e3424, roughness: 0.7 }),
+      white: pm({ color: 0xe4e1d6, roughness: 0.55 }),
+      roof: pm({ color: 0x34373a, roughness: 0.9 }),
+      glass: pm({ color: 0x0d1114, roughness: 0.12, metalness: 0.4 }),
+      red: pm({ color: 0x9c1b16, roughness: 0.5 }),
       // Glows whether or not there's power.
       screen: new THREE.MeshBasicMaterial({ color: new THREE.Color(0.16, 0.32, 0.26) }),
       shade: new THREE.MeshBasicMaterial({ color: new THREE.Color(1.8, 1.35, 0.7), side: THREE.DoubleSide }),

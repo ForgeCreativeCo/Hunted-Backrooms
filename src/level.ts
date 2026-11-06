@@ -45,7 +45,7 @@ export interface Door {
   openT: number;
 }
 
-export type PropType = 'chair' | 'desk' | 'cabinet' | 'crt' | 'mattress' | 'lamp' | 'phone' | 'mannequin' | 'stairs' | 'paper' | 'speaker';
+export type PropType = 'chair' | 'desk' | 'cabinet' | 'crt' | 'mattress' | 'lamp' | 'phone' | 'mannequin' | 'stairs' | 'paper' | 'speaker' | 'house' | 'fence' | 'mailbox' | 'fan' | 'stop';
 
 /** A piece of furniture or debris. Front is local +z; `ceil` props hang upside down from the ceiling. */
 export interface Prop {
@@ -74,9 +74,19 @@ export interface Box {
  * carpet and lights for ever. Furniture gathers in a few pockets; one region
  * has no power at all; one has holes in its darker carpet; one room is red;
  * and one stretch gives way to the Poolrooms: white tile, ankle-deep water,
- * and light that comes from nowhere.
+ * and light that comes from nowhere. Somewhere there is a street: a row of
+ * houses on either side of a road, built indoors under the office ceiling.
  */
-export enum Zone { Bare, Furnished, Dark, Pitfalls, Manila, Pool }
+export enum Zone { Bare, Furnished, Dark, Pitfalls, Manila, Pool, Street }
+
+/** The Street's hall, in world units: the road runs along x when `alongX`, else along z. */
+export interface Street {
+  x0: number;
+  z0: number;
+  x1: number;
+  z1: number;
+  alongX: boolean;
+}
 
 /** The floor shader cuts this many holes at most. */
 export const MAX_PITS = 48;
@@ -105,6 +115,10 @@ export class Level {
   dead: Uint8Array = new Uint8Array(0);
   /** Holes in the floor of the Pitfalls: `hole` is what's drawn, `solid` what stops a body (a little inside it, so you can stand at the lip). */
   pits: { hole: Box; solid: Box }[] = [];
+  /** The Street's hall, or null if no place for it fit. */
+  street: Street | null = null;
+  /** The Street's hall in cells. */
+  private streetCells: { x: number; y: number; w: number; h: number } | null = null;
   exits: Exit[] = [];
   exitCells = new Set<number>();
   spawnCell = 0;
@@ -413,10 +427,15 @@ export class Level {
       }
     }
 
-    // 4. Pillars at grid corners where all four meeting edges are open.
+    // 3c. The Street: one long, tall hall with a road down the middle and houses
+    // along both sides. Walled in again, with the road leading in at either end.
+    this.placeStreet(new RNG(this.seed + ':street'));
+
+    // 4. Pillars at grid corners where all four meeting edges are open (never in the road).
     for (let vy = 1; vy < H; vy++) {
       for (let vx = 1; vx < W; vx++) {
         const a = this.cell(vx - 1, vy - 1), b = this.cell(vx, vy);
+        if (this.zone[a] === Zone.Street || this.zone[b] === Zone.Street) continue;
         const open = this.open(a, 1) && this.open(a, 2) && this.open(b, 0) && this.open(b, 3);
         if (open && rng.chance(0.3)) this.pillars.push({ x: vx * this.CS, z: vy * this.CS });
       }
@@ -451,16 +470,19 @@ export class Level {
       return { x: x / cells.length, z: z / cells.length };
     });
     for (let c = 0; c < this.cells; c++) {
-      this.panel[c] = (this.cx(c) + this.cy(c)) % 2 === 0 || rng.chance(0.2) ? 1 : 0;
+      // The Street is lit end to end, like a sound stage.
+      this.panel[c] = (this.cx(c) + this.cy(c)) % 2 === 0 || this.zone[c] === Zone.Street || rng.chance(0.2) ? 1 : 0;
     }
 
-    // 6. Exits on the border, far apart.
+    // 6. Exits on the border, far apart (never behind the Street's houses).
     const borderCell = () => {
-      const side = rng.int(4);
-      const t = rng.int(1, (side % 2 === 0 ? W : H) - 1);
-      const x = side === 1 ? W - 1 : side === 3 ? 0 : t;
-      const y = side === 0 ? 0 : side === 2 ? H - 1 : t;
-      return { cell: this.cell(x, y), dir: side };
+      for (;;) {
+        const side = rng.int(4);
+        const t = rng.int(1, (side % 2 === 0 ? W : H) - 1);
+        const x = side === 1 ? W - 1 : side === 3 ? 0 : t;
+        const y = side === 0 ? 0 : side === 2 ? H - 1 : t;
+        if (this.zone[this.cell(x, y)] !== Zone.Street) return { cell: this.cell(x, y), dir: side };
+      }
     };
     this.exits.push(borderCell());
     while (this.exits.length < CFG.EXITS) {
@@ -500,7 +522,7 @@ export class Level {
       if (i === undefined) return;
       if (z === Zone.Dark) this.dead[i] = 1;
       for (const c of this.circuitCells[i]) {
-        if (this.zone[c] === Zone.Manila) continue;
+        if (this.zone[c] === Zone.Manila || this.zone[c] === Zone.Street) continue;
         this.zone[c] = z;
         // The Poolrooms have no light fittings: the light is just there. Their
         // rooms run tall, never cramped.
@@ -510,6 +532,152 @@ export class Level {
         }
       }
     });
+  }
+
+  /**
+   * Find room for the Street (four cells wide, ten to fifteen long, clear of the
+   * Manila Room), open it up under one tall ceiling, then wall it in again. The
+   * way in is the road itself at either end; a side door is knocked through only
+   * if the level would otherwise be cut in two.
+   */
+  private placeStreet(rng: RNG) {
+    const { W, H } = this;
+    const WIDE = 4;
+    for (let tries = 0; tries < 60; tries++) {
+      const along = rng.int(10, 16);
+      const alongX = rng.chance(0.5);
+      const w = alongX ? along : WIDE, h = alongX ? WIDE : along;
+      if (w > W || h > H) continue;
+      const x = rng.int(0, W - w + 1), y = rng.int(0, H - h + 1);
+      let clear = true;
+      for (let yy = y - 1; yy <= y + h && clear; yy++) {
+        for (let xx = x - 1; xx <= x + w && clear; xx++) {
+          if (this.inBounds(xx, yy) && this.zone[this.cell(xx, yy)] === Zone.Manila) clear = false;
+        }
+      }
+      if (!clear) continue;
+
+      const inside = (xx: number, yy: number) => xx >= x && xx < x + w && yy >= y && yy < y + h;
+      const ends: number[] = [], sides: number[] = [];
+      for (let yy = y; yy < y + h; yy++) {
+        for (let xx = x; xx < x + w; xx++) {
+          const c = this.cell(xx, yy);
+          this.zone[c] = Zone.Street;
+          this.ceil[c] = 6.5;
+          for (let d = 0; d < 4; d++) {
+            const k = this.edgeOf(c, d);
+            const nx = xx + DX[d], ny = yy + DY[d];
+            if (inside(nx, ny)) { this.walls[k] = 0; continue; }
+            this.walls[k] = 1;
+            if (!this.inBounds(nx, ny)) continue;
+            // An end wall is across the road; a side wall runs along it.
+            const end = alongX ? d === 1 || d === 3 : d === 0 || d === 2;
+            (end ? ends : sides).push(k);
+          }
+        }
+      }
+      // The road comes in through the middle of each end.
+      const middle = ends.filter((k) => {
+        const s = this.edgeSegment(k);
+        const t = alongX ? s.z1 / this.CS - y : s.x1 / this.CS - x;
+        return t === 1 || t === 2;
+      });
+      const byEnd = new Map<number, number[]>();
+      for (const k of middle) {
+        const s = this.edgeSegment(k);
+        const key = alongX ? s.x1 : s.z1;
+        byEnd.set(key, [...(byEnd.get(key) ?? []), k]);
+      }
+      for (const ks of byEnd.values()) this.walls[rng.pick(ks)] = 0;
+      for (const k of [...rng.shuffle(ends), ...rng.shuffle(sides)]) {
+        if (this.connected()) break;
+        this.walls[k] = 0;
+      }
+      const CS = this.CS;
+      this.streetCells = { x, y, w, h };
+      this.street = { x0: x * CS, z0: y * CS, x1: (x + w) * CS, z1: (y + h) * CS, alongX };
+      return;
+    }
+  }
+
+  /**
+   * The Street's houses: façades against both long walls, with picket fences
+   * between them, mailboxes at the kerb, a stop sign, fans turning slowly far
+   * overhead, and one figure standing in the road.
+   */
+  private furnishStreet(rng: RNG, prop: (p: Partial<Prop> & { type: PropType; x: number; z: number }) => Prop) {
+    const sc = this.streetCells, st = this.street;
+    if (!sc || !st) return;
+    const CS = this.CS;
+    const n = st.alongX ? sc.w : sc.h;
+    // One long side at a time: d is the outward direction of its walls.
+    const sides = st.alongX ? [0, 2] : [1, 3];
+    for (const d of sides) {
+      const nx = -DX[d], nz = -DY[d]; // into the hall
+      const ry = Math.atan2(nx, nz);
+      const cellAt = (i: number) => st.alongX
+        ? this.cell(sc.x + i, d === 0 ? sc.y : sc.y + sc.h - 1)
+        : this.cell(d === 3 ? sc.x : sc.x + sc.w - 1, sc.y + i);
+      const walled = (i: number) => {
+        const k = this.edgeOf(cellAt(i), d);
+        return this.walls[k] === 1 && !this.doorOnEdge.has(k);
+      };
+      // The wall line, and a point on it a distance a along from the street's start.
+      const c0 = this.center(cellAt(0));
+      const wx = c0.x - nx * CS / 2, wz = c0.z - nz * CS / 2;
+      const at = (a: number, out: number) => ({ x: (st.alongX ? st.x0 + a : wx) + nx * out, z: (st.alongX ? wz : st.z0 + a) + nz * out });
+      const solid = (a0: number, a1: number, o0: number, o1: number) => {
+        const p = at(a0, o0), q = at(a1, o1);
+        this.addSolid({ x0: Math.min(p.x, q.x), z0: Math.min(p.z, q.z), x1: Math.max(p.x, q.x), z1: Math.max(p.z, q.z) });
+      };
+      let i = 0;
+      while (i < n) {
+        if (!walled(i)) { i++; continue; }
+        const span = i + 1 < n && walled(i + 1) ? 2 : 1;
+        const a0 = i * CS, a1 = (i + span) * CS;
+        if (span === 2) {
+          // A house two cells wide, with a strip of fence either side of it.
+          const v = rng.int(3) | (rng.chance(0.5) ? 4 : 0);
+          const p = at((a0 + a1) / 2, 0.08);
+          prop({ type: 'house', ...p, ry, v });
+          solid(a0 + 0.35, a1 - 0.35, 0, 0.88);
+          for (const [f0, f1] of [[a0, a0 + 0.35], [a1 - 0.35, a1]]) {
+            const f = at((f0 + f1) / 2, 0.8);
+            prop({ type: 'fence', ...f, ry, v: Math.round((f1 - f0) * 100) });
+          }
+          solid(a0, a1, 0.72, 0.88);
+          // Its mailbox at the kerb, between the driveway and the path.
+          const ma = (a0 + a1) / 2 + ((v & 4) ? -0.4 : 0.4);
+          prop({ type: 'mailbox', ...at(ma, 2.25), ry: ry + Math.PI });
+          solid(ma - 0.08, ma + 0.08, 2.17, 2.33);
+        } else {
+          // A gap with only a fence in it.
+          const f = at((a0 + a1) / 2, 0.8);
+          prop({ type: 'fence', ...f, ry, v: Math.round((a1 - a0) * 100) });
+          solid(a0, a1, 0.72, 0.88);
+        }
+        i += span;
+      }
+    }
+    // Ceiling fans down the middle, over the road.
+    const mid = st.alongX ? (st.z0 + st.z1) / 2 : (st.x0 + st.x1) / 2;
+    const len = st.alongX ? st.x1 - st.x0 : st.z1 - st.z0;
+    for (let a = CS; a < len; a += CS * 2) {
+      const x = st.alongX ? st.x0 + a : mid, z = st.alongX ? mid : st.z0 + a;
+      prop({ type: 'fan', x, z, y: 6.5, ry: rng.range(0, Math.PI * 2), ceil: true });
+    }
+    // A stop sign on the pavement near one end.
+    const end = rng.chance(0.5) ? CS * 0.5 : len - CS * 0.5;
+    const side = rng.chance(0.5) ? 1 : -1;
+    const sx = st.alongX ? st.x0 + end : mid + side * 3.75, sz = st.alongX ? mid + side * 3.75 : st.z0 + end;
+    // It faces into the street, at whoever is walking towards that end.
+    prop({ type: 'stop', x: sx, z: sz, ry: st.alongX ? (end < len / 2 ? Math.PI / 2 : -Math.PI / 2) : (end < len / 2 ? 0 : Math.PI) });
+    this.addSolid({ x0: sx - 0.06, z0: sz - 0.06, x1: sx + 0.06, z1: sz + 0.06 });
+    // Someone standing in the middle of the road, far down it, facing back up.
+    const fa = Math.round((rng.chance(0.5) ? 0.75 : 0.25) * len / CS) * CS;
+    const fx = st.alongX ? st.x0 + fa : mid, fz = st.alongX ? mid : st.z0 + fa;
+    prop({ type: 'mannequin', x: fx, z: fz, ry: st.alongX ? (fa > len / 2 ? -Math.PI / 2 : Math.PI / 2) : (fa > len / 2 ? Math.PI : 0) });
+    this.addSolid({ x0: fx - 0.2, z0: fz - 0.2, x1: fx + 0.2, z1: fz + 0.2 });
   }
 
   // ---- Doors and debris ----
@@ -588,7 +756,7 @@ export class Level {
     // Freestanding doors in the middle of open rooms: a frame and a door, and nothing around them.
     const free: number[] = [];
     for (let k = 0; k < this.edgeCount; k++) {
-      if (this.walls[k] || this.isBorder(k) || this.doorOnEdge.has(k)) continue;
+      if (this.walls[k] || this.isBorder(k) || this.doorOnEdge.has(k) || this.edgeCells(k).some((c) => this.zone[c] === Zone.Street)) continue;
       const s = this.edgeSegment(k);
       const vx = Math.round(s.x1 / CS), vy = Math.round(s.z1 / CS);
       const [v2x, v2y] = s.horizontal ? [vx + 1, vy] : [vx, vy + 1];
@@ -608,7 +776,7 @@ export class Level {
     const wallSides: [number, number][] = [];
     for (let k = 0; k < this.edgeCount; k++) {
       if (!this.walls[k] || exitEdges.has(k)) continue;
-      for (const c of this.edgeCells(k)) if (c >= 0 && !this.exitCells.has(c)) wallSides.push([k, c]);
+      for (const c of this.edgeCells(k)) if (c >= 0 && !this.exitCells.has(c) && this.zone[c] !== Zone.Street) wallSides.push([k, c]);
     }
     rng.shuffle(wallSides);
     const takeSide = () => {
@@ -674,7 +842,7 @@ export class Level {
     // Debris and furniture: thick in the furnished pockets, a rare thing anywhere else.
     const density = (c: number) => {
       const z = this.zone[c];
-      return z === Zone.Furnished ? 1 : z === Zone.Manila || z === Zone.Pool || pitCell[c] ? 0 : 0.12;
+      return z === Zone.Furnished ? 1 : z === Zone.Manila || z === Zone.Pool || z === Zone.Street || pitCell[c] ? 0 : 0.12;
     };
     const prop =(p: Partial<Prop> & { type: PropType; x: number; z: number }) => {
       const full: Prop = { y: 0, ry: 0, rx: 0, rz: 0, ceil: false, cell: this.cellAt(p.x, p.z), v: 0, ...p };
@@ -686,6 +854,8 @@ export class Level {
       const ax = swap ? hz : hx, az = swap ? hx : hz;
       this.addSolid({ x0: x - ax, z0: z - az, x1: x + ax, z1: z + az });
     };
+    // The Street first, so its houses claim their walls before any stray furniture can.
+    this.furnishStreet(new RNG(this.seed + ':street-props'), prop);
     const order = rng.shuffle(Array.from({ length: this.cells }, (_, i) => i));
     for (const c of order) {
       if (this.exitCells.has(c)) continue;
@@ -805,7 +975,7 @@ export class Level {
     // Desks fused halfway through walls.
     let fused = 0;
     for (let k = 0; k < this.edgeCount && fused < 5; k++) {
-      if (!this.walls[k] || this.isBorder(k) || this.doorOnEdge.has(k) || !rng.chance(0.03)) continue;
+      if (!this.walls[k] || this.isBorder(k) || this.doorOnEdge.has(k) || this.edgeCells(k).some((c) => this.zone[c] === Zone.Street) || !rng.chance(0.03)) continue;
       const s = this.edgeSegment(k);
       const x = (s.x1 + s.x2) / 2, z = (s.z1 + s.z2) / 2;
       const along = rng.range(-0.6, 0.6);

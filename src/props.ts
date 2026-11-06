@@ -5,7 +5,10 @@ import type { Prop } from './level';
 // Furniture and debris, built from simple shapes. Every part is baked into one
 // merged geometry per material, so hundreds of props cost a handful of draw calls.
 
-export type PropMat = 'wood' | 'laminate' | 'metal' | 'fabric' | 'plastic' | 'mattress' | 'skin' | 'paper' | 'dark' | 'screen' | 'shade';
+export type PropMat = 'wood' | 'laminate' | 'metal' | 'fabric' | 'plastic' | 'mattress' | 'skin' | 'paper' | 'dark' | 'screen' | 'shade'
+  | 'sidingBlue' | 'sidingGrey' | 'sidingRed' | 'white' | 'roof' | 'glass' | 'red';
+
+const SIDING: PropMat[] = ['sidingBlue', 'sidingGrey', 'sidingRed'];
 
 const tmpM = new THREE.Matrix4();
 const tmpQ = new THREE.Quaternion();
@@ -136,6 +139,79 @@ function speaker(b: Builder) {
   b.cyl('dark', 0.06, 0.06, 0.01, 0, dy + ay * 0.04, az * 0.04, tilt);
 }
 
+/**
+ * A one-storey house front, built against a wall: local z = 0 is the wall and
+ * +z the street. Only 0.85 m deep, like a film set, but its roof reaches out
+ * over the pavement so it reads as a whole house. v: siding colour (0..2), and
+ * bit 4 mirrors it (garage on the other side).
+ */
+function house(b: Builder, v: number) {
+  const W = 5.3, H = 2.9, D = 0.85;
+  const siding = SIDING[(v & 3) % 3];
+  const m = v & 4 ? -1 : 1;
+  b.box(siding, W, H, D, 0, H / 2, D / 2);
+  // Gable wall behind the roof slope, so there's no gap to see through.
+  b.box(siding, W, 0.9, 0.3, 0, H + 0.45, 0.15);
+  // Roof: one long slope from high at the wall to the eaves over the pavement.
+  const run = 1.65, rise = 1.15, len = Math.hypot(run, rise);
+  b.box('roof', W + 0.5, 0.09, len, 0, H + rise / 2 + 0.05, run / 2, Math.atan2(rise, run));
+  b.box('white', W + 0.5, 0.2, 0.05, 0, H - 0.02, run + 0.01); // fascia
+  for (const s of [-1, 1]) b.box('white', 0.1, H, 0.06, s * (W / 2 - 0.05), H / 2, D + 0.01); // corner boards
+  // Garage: a white sectional door with a row of small windows.
+  const gx = -m * 1.15;
+  b.box('white', 2.7, 2.25, 0.05, gx, 1.125, D + 0.02);
+  for (let i = 1; i < 4; i++) b.box('roof', 2.66, 0.02, 0.01, gx, i * 0.56, D + 0.05);
+  for (let i = 0; i < 4; i++) b.box('glass', 0.5, 0.2, 0.01, gx - 0.96 + i * 0.64, 1.86, D + 0.05);
+  b.box('white', 2.95, 0.12, 0.08, gx, 2.31, D + 0.03);
+  // Front door with a step, and a window beside it.
+  const dx = m * 1.05;
+  b.box('white', 1.06, 2.2, 0.06, dx, 1.1, D + 0.01);
+  b.box('dark', 0.9, 2.05, 0.04, dx, 1.05, D + 0.04);
+  b.box('metal', 0.05, 0.05, 0.05, dx + m * 0.34, 1.0, D + 0.08);
+  b.box('laminate', 1.2, 0.12, 0.35, dx, 0.06, D + 0.17);
+  const wx = m * 2.0;
+  b.box('white', 0.8, 1.1, 0.06, wx, 1.55, D + 0.01);
+  b.box('glass', 0.66, 0.96, 0.04, wx, 1.55, D + 0.04);
+  b.box('white', 0.66, 0.04, 0.05, wx, 1.55, D + 0.06);
+  // A light by the door that's never on.
+  b.box('dark', 0.1, 0.18, 0.08, dx - m * 0.62, 1.85, D + 0.05);
+}
+
+/** A white picket fence `len` metres long, centred on the origin, running along x. */
+function fence(b: Builder, len: number) {
+  for (const y of [0.3, 0.75]) b.box('white', len, 0.06, 0.03, 0, y, -0.02);
+  const n = Math.max(1, Math.round(len / 0.13));
+  for (let i = 0; i < n; i++) {
+    const x = -len / 2 + (i + 0.5) * (len / n);
+    b.box('white', 0.08, 0.95, 0.02, x, 0.475, 0.01);
+    b.box('white', 0.057, 0.057, 0.02, x, 0.95, 0.01, 0, 0, Math.PI / 4);
+  }
+}
+
+function mailbox(b: Builder) {
+  b.box('wood', 0.08, 1.05, 0.08, 0, 0.525, 0);
+  b.box('wood', 0.14, 0.04, 0.4, 0, 1.06, 0.05);
+  b.box('metal', 0.18, 0.15, 0.42, 0, 1.15, 0.05);
+  b.cyl('metal', 0.09, 0.09, 0.42, 0, 1.22, 0.05, Math.PI / 2);
+  b.box('red', 0.02, 0.16, 0.03, 0.1, 1.3, -0.06); // the flag, up: there's mail
+}
+
+function fan(b: Builder) {
+  // Hanging from the ceiling (+y is down): a long rod, a motor, five wide blades.
+  b.cyl('metal', 0.02, 0.02, 1.0, 0, 0.5, 0);
+  b.cyl('dark', 0.16, 0.2, 0.18, 0, 1.08, 0);
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2;
+    b.box('dark', 0.2, 0.015, 1.35, Math.sin(a) * 0.82, 1.12, Math.cos(a) * 0.82, 0.06, a, 0);
+  }
+}
+
+function stopSign(b: Builder) {
+  b.box('metal', 0.05, 2.2, 0.05, 0, 1.1, 0);
+  b.add('white', new THREE.CylinderGeometry(0.33, 0.33, 0.02, 8), 0, 2.3, 0.04, Math.PI / 2, Math.PI / 8, 0);
+  b.add('red', new THREE.CylinderGeometry(0.3, 0.3, 0.02, 8), 0, 2.3, 0.05, Math.PI / 2, Math.PI / 8, 0);
+}
+
 export function buildProps(props: Prop[]): Map<PropMat, THREE.BufferGeometry> {
   const b = new Builder();
   const flip = new THREE.Matrix4().makeRotationX(Math.PI);
@@ -165,6 +241,11 @@ export function buildProps(props: Prop[]): Map<PropMat, THREE.BufferGeometry> {
       case 'stairs': stairs(b, p.v / 10); break;
       case 'paper': b.box('paper', 0.21, 0.002, 0.297, 0, 0, 0); break;
       case 'speaker': speaker(b); break;
+      case 'house': house(b, p.v); break;
+      case 'fence': fence(b, p.v / 100); break;
+      case 'mailbox': mailbox(b); break;
+      case 'fan': fan(b); break;
+      case 'stop': stopSign(b); break;
     }
   }
   const out = new Map<PropMat, THREE.BufferGeometry>();
